@@ -41,10 +41,18 @@ impl std::default::Default for Project {
 impl Project {
     pub fn new(path: Option<PathBuf>, filename: Option<String>) -> Result<Self, Error> {
         let mut dc = Self::default();
+        let mut path = if let Some(pb) = path {
+            pb
+        } else {
+            PathBuf::new()
+        };
 
-        if let Some(pb) = path {
-            dc.path =
-                std::fs::canonicalize(&pb).map_err(|err| Error::InvalidConfig(err.to_string()))?;
+        path.canonicalize().map_err(|err| Error::InvalidConfig(err.to_string()))?;
+
+        for ancestor in path.ancestors() {
+            if ancestor.join(".devcontainer").exists() {
+                dc.path = ancestor.to_path_buf();
+            } 
         }
 
         if let Some(f) = filename {
