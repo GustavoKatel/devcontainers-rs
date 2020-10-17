@@ -1,8 +1,11 @@
+use bollard::errors::Error as DockerError;
+
 #[derive(Debug)]
 pub enum Error {
     ConfigDoesNotExist(String),
     InvalidConfig(String),
     UpError(UpError),
+    DockerError(DockerError),
 }
 
 #[derive(Debug)]
@@ -20,6 +23,9 @@ impl std::fmt::Display for Error {
             Error::ConfigDoesNotExist(file) => write!(f, "Config file does not exist: {}", file),
             Error::InvalidConfig(err) => write!(f, "Config is not valid: {}", err),
             Error::UpError(err) => write!(f, "Error trying to start project: {}", err),
+            Error::DockerError(err) => {
+                write!(f, "Error trying to communicate with docker: {}", err)
+            }
         }
     }
 }
@@ -43,5 +49,11 @@ impl std::fmt::Display for UpError {
 impl std::convert::From<UpError> for Error {
     fn from(e: UpError) -> Self {
         Error::UpError(e)
+    }
+}
+
+impl std::convert::From<DockerError> for Error {
+    fn from(e: DockerError) -> Self {
+        Error::DockerError(e)
     }
 }

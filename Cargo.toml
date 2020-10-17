@@ -11,7 +11,7 @@ clap = "2.33.3"
 tokio = { version = "0.2", features = ["full"] }
 serde = { version = "1.0.117", features = ["derive"] }
 json5 = "0.2.8"
-shiplift = { git = "https://github.com/softprops/shiplift.git", branch = "master" }
+bollard = "0.8"
 http = "0.2.1"
 futures = "0.3.6"
 log = "0.4.0"

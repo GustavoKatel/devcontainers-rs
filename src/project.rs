@@ -1,12 +1,11 @@
-use futures::StreamExt;
-use http;
-use json5;
-use shiplift::{
-    builder::{ContainerOptionsBuilder, ExecContainerOptions},
-    rep::ContainerCreateInfo,
-    tty::TtyChunk,
-    Container, ContainerOptions, Docker, PullOptions,
+use bollard::{
+    container::{self, StartContainerOptions},
+    exec::{CreateExecOptions, StartExecOptions, StartExecResults},
+    image::CreateImageOptions,
+    Docker, API_DEFAULT_VERSION,
 };
+use futures::StreamExt;
+use json5;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use tokio::fs;
@@ -101,10 +100,13 @@ impl Project {
     }
 
     async fn docker_pull_image(&self, docker: &Docker, image: String) -> Result<(), UpError> {
-        let opts = PullOptions::builder().image(image.as_str()).build();
-
         info!("Pulling image: {}", image);
-        let mut stream = docker.images().pull(&opts);
+        let options = Some(CreateImageOptions {
+            from_image: image,
+            ..Default::default()
+        });
+
+        let mut stream = docker.create_image(options, None, None);
 
         while let Some(pull_result) = stream.next().await {
             match pull_result {
@@ -123,167 +125,181 @@ impl Project {
         Ok(())
     }
 
-    async fn docker_exec<'a>(
+    async fn docker_exec(
         &self,
-        container: &'a Container<'a>,
+        docker: &Docker,
+        id: String,
         cmd: &CommandLineVec,
     ) -> Result<(), Error> {
-        let options = ExecContainerOptions::builder()
-            .cmd(cmd.to_args_vec().iter().map(|s| s.as_str()).collect())
-            .attach_stdout(true)
-            .attach_stderr(true)
-            .build();
-
-        let debug_output = |chunk: TtyChunk| match chunk {
-            TtyChunk::StdOut(bytes) => debug!("STDOUT: {}", std::str::from_utf8(&bytes).unwrap()),
-            TtyChunk::StdErr(bytes) => debug!("STDERR: {}", std::str::from_utf8(&bytes).unwrap()),
-            _ => unreachable!(),
+        let options = CreateExecOptions {
+            cmd: Some(cmd.to_args_vec()),
+            attach_stdout: Some(true),
+            attach_stderr: Some(true),
+            ..Default::default()
         };
 
-        info!("Executing command in container: {}", container.id());
+        let exec = docker.create_exec(id.as_str(), options).await?;
+
+        let mut stream = docker.start_exec(exec.id.as_str(), None::<StartExecOptions>);
+
+        info!("Executing command in container: {}", id);
         debug!("Args: {:?}", cmd.to_args_vec());
-        while let Some(exec_result) = container.exec(&options).next().await {
-            match exec_result {
-                Ok(chunk) => debug_output(chunk),
-                Err(e) => {
-                    error!("Error while executing command in container: {}", e);
-                    return Err(Error::UpError(UpError::ExecCommand(e.to_string())));
-                }
+        while let Some(exec_result) = stream.next().await {
+            match exec_result? {
+                StartExecResults::Attached { log: log } => match log {
+                    container::LogOutput::StdOut { message: bytes } => {
+                        debug!("STDOUT: {}", std::str::from_utf8(&bytes).unwrap())
+                    }
+                    container::LogOutput::StdErr { message: bytes } => {
+                        debug!("STDERR: {}", std::str::from_utf8(&bytes).unwrap())
+                    }
+                    container::LogOutput::Console { message: bytes } => {
+                        debug!("CONSOLE: {}", std::str::from_utf8(&bytes).unwrap())
+                    }
+                    container::LogOutput::StdIn { message: bytes } => unreachable!(),
+                },
+                StartExecResults::Detached => { /*nothing to do here*/ }
             }
         }
 
         Ok(())
     }
 
-    async fn container_opts_build_ports<'a>(
+    async fn container_opts_build_ports(
         &self,
         devcontainer: &DevContainer,
-        opts_ref: &'a mut ContainerOptionsBuilder,
-    ) -> Result<&'a mut ContainerOptionsBuilder, Error> {
-        let mut opts_ref = opts_ref;
+        config: &mut container::Config<String>,
+    ) -> Result<(), Error> {
+        let mut ports_to_expose: HashMap<String, HashMap<(), ()>> = HashMap::new();
 
         if let Some(app_port) = devcontainer.app_port.as_ref() {
-            opts_ref = match app_port {
-                AppPort::Port(p) => opts_ref.expose(*p, "tcp", *p),
+            match app_port {
+                AppPort::Port(p) => {
+                    ports_to_expose.insert(p.to_string(), HashMap::new());
+                }
                 AppPort::Ports(ports) => {
                     for p in ports {
-                        opts_ref = opts_ref.expose(*p, "tcp", *p);
+                        ports_to_expose.insert(format!("{}/tcp", p), HashMap::new());
                     }
-                    opts_ref
                 }
                 AppPort::PortStr(p_str) => {
                     let p = p_str
                         .parse::<u32>()
                         .map_err(|err| Error::InvalidConfig(err.to_string()))?;
-                    opts_ref.expose(p, "tcp", p)
+                    ports_to_expose.insert(format!("{}/tcp", p), HashMap::new());
                 }
             };
         }
-        Ok(opts_ref)
+
+        config.exposed_ports = Some(ports_to_expose);
+
+        Ok(())
     }
 
-    async fn container_opts_build_envs<'a>(
+    async fn container_opts_build_envs(
         &self,
         devcontainer: &DevContainer,
-        opts_ref: &'a mut ContainerOptionsBuilder,
-    ) -> Result<&'a mut ContainerOptionsBuilder, Error> {
-        let mut opts_ref = opts_ref;
-
+        config: &mut container::Config<String>,
+    ) -> Result<(), Error> {
         if let Some(env_map) = devcontainer.container_env.as_ref() {
             let envs: Vec<String> = env_map
                 .iter()
                 .map(|(key, value)| format!("{}={}", key, value))
                 .collect();
-            opts_ref = opts_ref.env(envs.iter().map(|s| s.as_str()).collect());
+            config.env = Some(envs);
         }
 
-        Ok(opts_ref)
+        Ok(())
     }
 
-    async fn container_opts_build_mounts<'a>(
+    async fn container_opts_build_mounts(
         &self,
         devcontainer: &DevContainer,
-        opts_ref: &'a mut ContainerOptionsBuilder,
-    ) -> Result<&'a mut ContainerOptionsBuilder, Error> {
-        let mut opts_ref = opts_ref;
+        config: &mut container::Config<String>,
+    ) -> Result<(), Error> {
+        let mut mounts: HashMap<String, HashMap<(), ()>> = HashMap::new();
 
         let wk_mount = match devcontainer.workspace_mount.as_ref() {
             None => {
                 let current_dir = self.path.to_str().unwrap();
                 // TODO this needs improvement: use consistency:cached
-                format!("{}:/workspace", current_dir)
+                //format!("{}:/workspace", current_dir)
+                format!(
+                    "source={},target=/workspace,type=bind,consistency=cached",
+                    current_dir
+                )
             }
             Some(p) => p.clone(),
         };
 
-        let mut mounts: Vec<String> = vec![wk_mount];
+        mounts.insert(wk_mount, HashMap::new());
 
         if let Some(dev_mounts) = devcontainer.mounts.as_ref() {
-            mounts.extend(dev_mounts.iter().map(|s| s.clone()));
+            for m in dev_mounts.iter() {
+                mounts.insert(m.clone(), HashMap::new());
+            }
         }
 
-        opts_ref = opts_ref.volumes(mounts.iter().map(|s| s.as_str()).collect());
+        config.volumes = Some(mounts);
 
-        Ok(opts_ref)
+        Ok(())
     }
 
-    async fn container_opts_build_cmd<'a>(
+    async fn container_opts_build_cmd(
         &self,
         devcontainer: &DevContainer,
-        opts_ref: &'a mut ContainerOptionsBuilder,
-    ) -> Result<&'a mut ContainerOptionsBuilder, Error> {
-        let mut opts_ref = opts_ref;
-
+        config: &mut container::Config<String>,
+    ) -> Result<(), Error> {
         // TODO find a way to add run args (capabilities and seccomp)
         //if let Some(args) = devcontainer.run_args.as_ref() {
         //opts_ref = opts_ref.cmd(args.iter().map(|s| s.as_str()).collect());
         //}
 
         if devcontainer.override_command {
-            opts_ref = opts_ref.cmd(vec!["/bin/sh", "-c", "while sleep 1000; do :; done"]);
+            config.cmd = Some(
+                vec!["/bin/sh", "-c", "while sleep 1000; do :; done"]
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect(),
+            );
         }
 
-        Ok(opts_ref)
+        Ok(())
     }
 
     async fn up_docker(
         &self,
         docker: &Docker,
         devcontainer: &DevContainer,
-        initial_opts: ContainerOptionsBuilder,
-    ) -> Result<ContainerCreateInfo, Error> {
-        let mut opts = initial_opts;
-        let mut opts_ref = &mut opts;
+        image: String,
+    ) -> Result<String, Error> {
+        let mut config: container::Config<String> = container::Config {
+            image: Some(image),
+            ..Default::default()
+        };
 
-        opts_ref = self
-            .container_opts_build_ports(devcontainer, opts_ref)
+        self.container_opts_build_ports(devcontainer, &mut config)
             .await?;
 
-        opts_ref = self
-            .container_opts_build_envs(devcontainer, opts_ref)
+        self.container_opts_build_envs(devcontainer, &mut config)
             .await?;
 
-        opts_ref = self
-            .container_opts_build_mounts(devcontainer, opts_ref)
+        self.container_opts_build_mounts(devcontainer, &mut config)
             .await?;
 
-        opts_ref = self
-            .container_opts_build_cmd(devcontainer, opts_ref)
+        self.container_opts_build_cmd(devcontainer, &mut config)
             .await?;
 
         let mut labels = HashMap::new();
-        labels.insert("devcontainer", "true");
-        opts_ref = opts_ref.labels(&labels);
+        labels.insert("devcontainer".to_string(), "true".to_string());
 
-        let opts_built = opts_ref.build();
+        config.labels = Some(labels);
 
         let info = docker
-            .containers()
-            .create(&opts_built)
-            .await
-            .map_err(|err| UpError::ContainerCreate(err.to_string()))?;
+            .create_container::<String, String>(None, config)
+            .await?;
 
-        Ok(info)
+        Ok(info.id)
     }
 
     fn docker_format_image(&self, image: String) -> String {
@@ -294,75 +310,72 @@ impl Project {
         format!("{}:latest", image)
     }
 
-    async fn up_from_image<'a>(
+    async fn up_from_image(
         &self,
-        docker: &'a Docker,
+        docker: &Docker,
         devcontainer: &DevContainer,
-    ) -> Result<Container<'a>, Error> {
+    ) -> Result<String, Error> {
         let image = self.docker_format_image(devcontainer.image.as_ref().unwrap().to_string());
 
         self.docker_pull_image(docker, image.clone()).await?;
 
-        // TODO CHECK IF CONTAINER ALREADY EXISTS
-
-        let opts = ContainerOptions::builder(image.as_ref());
-
-        let info = self.up_docker(&docker, devcontainer, opts).await?;
-
         info!("Creating container from: {}", image);
-        let container = Container::new(&docker, info.id);
+        let id = self.up_docker(&docker, devcontainer, image).await?;
 
         info!("Starting container");
-        container
-            .start()
-            .await
-            .map_err(|err| UpError::ContainerCreate(err.to_string()))?;
+        docker
+            .start_container(id.as_str(), None::<StartContainerOptions<String>>)
+            .await?;
 
         // postCreateCommand
         if let Some(cmd) = devcontainer.post_create_command.as_ref() {
-            self.docker_exec(&container, cmd).await?;
+            self.docker_exec(docker, id.clone(), cmd).await?;
         }
 
         // postStartCommand
         if let Some(cmd) = devcontainer.post_start_command.as_ref() {
-            self.docker_exec(&container, cmd).await?;
+            self.docker_exec(docker, id.clone(), cmd).await?;
         }
 
-        Ok(container)
+        Ok(id)
     }
 
     async fn up_from_build<'a>(
         &self,
-        docker: &'a Docker,
+        docker: &Docker,
         devcontainer: &DevContainer,
-    ) -> Result<Container<'a>, Error> {
+    ) -> Result<String, Error> {
         todo!()
     }
 
     async fn up_from_compose<'a>(
         &self,
-        docker: &'a Docker,
+        docker: &Docker,
         devcontainer: &DevContainer,
-    ) -> Result<Container<'a>, Error> {
+    ) -> Result<String, Error> {
         todo!()
+    }
+
+    async fn create_docker_client(&self) -> Result<Docker, Error> {
+        let docker = match self.docket_host.as_ref() {
+            None => Docker::connect_with_local_defaults()?,
+            Some(h) => {
+                let host = h.as_str();
+                Docker::connect_with_http(host, 60, API_DEFAULT_VERSION)?
+            }
+        };
+
+        Ok(docker)
     }
 
     pub async fn up(&self, should_wait: bool) -> Result<(), Error> {
         let devcontainer = self.devcontainer.as_ref().ok_or(UpError::NoDevContainer)?;
 
-        let docker = match self.docket_host.as_ref() {
-            None => Docker::new(),
-            Some(h) => {
-                let host = h
-                    .parse::<http::uri::Uri>()
-                    .map_err(|err| UpError::ContainerCreate(err.to_string()))?;
-                Docker::host(host)
-            }
-        };
+        let docker = self.create_docker_client().await?;
 
         info!("Starting containers");
 
-        let container = if devcontainer.image.is_some() {
+        let container_id = if devcontainer.image.is_some() {
             self.up_from_image(&docker, &devcontainer).await?
         } else if devcontainer.build.is_some() {
             self.up_from_build(&docker, &devcontainer).await?
@@ -370,7 +383,7 @@ impl Project {
             self.up_from_compose(&docker, &devcontainer).await?
         };
 
-        info!("Containers are ready: {}", container.id());
+        info!("Containers are ready: {}", container_id);
 
         let child = if devcontainer.application.is_some() {
             Some(self.spawn_application(devcontainer).await?)
@@ -384,6 +397,11 @@ impl Project {
 
         let signal_stream = signal::ctrl_c();
 
+        let mut container_wait_stream = docker.wait_container(
+            container_id.as_str(),
+            None::<container::WaitContainerOptions<String>>,
+        );
+
         if let Some(child) = child {
             info!("Waiting for application");
             tokio::select! {
@@ -393,7 +411,7 @@ impl Project {
                     }
                     info!("Application has finished. Closing down");
                 },
-                _ = container.wait() => {
+                _ = &mut container_wait_stream.next() => {
                     warn!("Container has finished! Restart required");
                     return Ok(());
                 },
@@ -405,7 +423,7 @@ impl Project {
         }
 
         let should_go_down = tokio::select! {
-            _ = container.wait() => {
+            _ = &mut container_wait_stream.next() => {
                 warn!("Container has finished! Nothing to do now. Closing down.");
                 false
             }
