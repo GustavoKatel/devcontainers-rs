@@ -2,7 +2,7 @@ use bollard::{
     container::{self, ListContainersOptions, StartContainerOptions},
     exec::{CreateExecOptions, StartExecOptions, StartExecResults},
     image::CreateImageOptions,
-    service::{HostConfig, Mount},
+    service::{HostConfig, Mount, PortBinding},
     Docker, API_DEFAULT_VERSION,
 };
 use futures::StreamExt;
@@ -173,28 +173,59 @@ impl Project {
         devcontainer: &DevContainer,
         config: &mut container::Config<String>,
     ) -> Result<(), Error> {
-        let mut ports_to_expose: HashMap<String, HashMap<(), ()>> = HashMap::new();
+        let mut ports_exposed: HashMap<String, HashMap<(), ()>> = HashMap::new();
+
+        let mut host_config = match config.host_config.clone() {
+            Some(hc) => hc,
+            None => HostConfig::default(),
+        };
+
+        let mut port_bindings = match host_config.port_bindings.clone() {
+            Some(m) => m,
+            None => HashMap::new(),
+        };
 
         if let Some(app_port) = devcontainer.app_port.as_ref() {
             match app_port {
                 AppPort::Port(p) => {
-                    ports_to_expose.insert(p.to_string(), HashMap::new());
+                    port_bindings.insert(
+                        format!("{}/tcp", p),
+                        Some(vec![PortBinding {
+                            host_ip: Some("0.0.0.0".to_string()),
+                            host_port: Some(format!("{}", p)),
+                        }]),
+                    );
+                    ports_exposed.insert(format!("{}/tcp", p), HashMap::new());
                 }
                 AppPort::Ports(ports) => {
                     for p in ports {
-                        ports_to_expose.insert(format!("{}/tcp", p), HashMap::new());
+                        port_bindings.insert(
+                            format!("{}/tcp", p),
+                            Some(vec![PortBinding {
+                                host_ip: Some(String::from("0.0.0.0")),
+                                host_port: Some(format!("{}", p)),
+                            }]),
+                        );
+                        ports_exposed.insert(format!("{}/tcp", p), HashMap::new());
                     }
                 }
                 AppPort::PortStr(p_str) => {
-                    let p = p_str
-                        .parse::<u32>()
-                        .map_err(|err| Error::InvalidConfig(err.to_string()))?;
-                    ports_to_expose.insert(format!("{}/tcp", p), HashMap::new());
+                    port_bindings.insert(
+                        format!("{}/tcp", p_str),
+                        Some(vec![PortBinding {
+                            host_ip: Some(String::from("0.0.0.0")),
+                            host_port: Some(p_str.clone()),
+                        }]),
+                    );
+                    ports_exposed.insert(format!("{}/tcp", p_str), HashMap::new());
                 }
             };
         }
 
-        config.exposed_ports = Some(ports_to_expose);
+        host_config.port_bindings = Some(port_bindings);
+        config.host_config = Some(host_config);
+
+        config.exposed_ports = Some(ports_exposed);
 
         Ok(())
     }
@@ -333,13 +364,13 @@ impl Project {
             ..Default::default()
         };
 
-        self.container_opts_build_ports(devcontainer, &mut config)
-            .await?;
-
         self.container_opts_build_envs(devcontainer, &mut config)
             .await?;
 
         self.container_opts_build_mounts(devcontainer, &mut config)
+            .await?;
+
+        self.container_opts_build_ports(devcontainer, &mut config)
             .await?;
 
         self.container_opts_build_cmd(devcontainer, &mut config)
@@ -369,6 +400,11 @@ impl Project {
 
         // postStartCommand
         if let Some(cmd) = devcontainer.post_start_command.as_ref() {
+            self.docker_exec(docker, id.clone(), cmd).await?;
+        }
+
+        // postAttachCommand
+        if let Some(cmd) = devcontainer.post_attach_command.as_ref() {
             self.docker_exec(docker, id.clone(), cmd).await?;
         }
 

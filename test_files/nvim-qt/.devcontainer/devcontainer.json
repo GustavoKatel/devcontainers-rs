@@ -1,5 +1,7 @@
 {
     "image": "ubuntu:20.04",
     "postCreateCommand": ["bash", "/workspace/.devcontainer/install-nvim.sh"],
-    "application": { "cmd": ["nvim-qt", "--server", "9797", "--nofork"] }
+    "postAttachCommand": ["bash", "/workspace/.devcontainer/run-nvim.sh"],
+    "appPort": 7777,
+    "application": { "cmd": ["nvim-qt", "--server", "127.0.0.1:7777", "--nofork"] }
 }
