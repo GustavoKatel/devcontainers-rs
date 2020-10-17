@@ -1,5 +1,6 @@
 use serde::{de, Deserialize, Deserializer};
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 
 use crate::errors::*;
 
@@ -198,6 +199,13 @@ impl DevContainer {
         }
 
         Ok(())
+    }
+
+    pub fn get_name(&self, path: &PathBuf) -> String {
+        self.name
+            .as_ref()
+            .map(|s| s.to_string())
+            .unwrap_or(path.file_name().unwrap().to_string_lossy().to_string())
     }
 }
 

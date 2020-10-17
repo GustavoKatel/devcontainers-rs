@@ -2,6 +2,7 @@ use bollard::{
     container::{self, StartContainerOptions, CreateContainerOptions, ListContainersOptions},
     exec::{CreateExecOptions, StartExecOptions, StartExecResults},
     image::CreateImageOptions,
+    service::{HostConfig, Mount, PortBinding},
     Docker, API_DEFAULT_VERSION,
 };
 use futures::StreamExt;
@@ -14,6 +15,7 @@ use tokio::signal;
 
 use crate::devcontainer::*;
 use crate::errors::*;
+use crate::mount_from_str::*;
 
 pub struct Project {
     pub path: PathBuf,
@@ -139,6 +141,8 @@ impl Project {
         id: String,
         cmd: &CommandLineVec,
     ) -> Result<(), Error> {
+        info!("Executing command in container: {}", id);
+
         let options = CreateExecOptions {
             cmd: Some(cmd.to_args_vec()),
             attach_stdout: Some(true),
@@ -150,7 +154,6 @@ impl Project {
 
         let mut stream = docker.start_exec(exec.id.as_str(), None::<StartExecOptions>);
 
-        info!("Executing command in container: {}", id);
         debug!("Args: {:?}", cmd.to_args_vec());
         while let Some(exec_result) = stream.next().await {
             match exec_result? {
@@ -178,28 +181,59 @@ impl Project {
         devcontainer: &DevContainer,
         config: &mut container::Config<String>,
     ) -> Result<(), Error> {
-        let mut ports_to_expose: HashMap<String, HashMap<(), ()>> = HashMap::new();
+        let mut ports_exposed: HashMap<String, HashMap<(), ()>> = HashMap::new();
+
+        let mut host_config = match config.host_config.clone() {
+            Some(hc) => hc,
+            None => HostConfig::default(),
+        };
+
+        let mut port_bindings = match host_config.port_bindings.clone() {
+            Some(m) => m,
+            None => HashMap::new(),
+        };
 
         if let Some(app_port) = devcontainer.app_port.as_ref() {
             match app_port {
                 AppPort::Port(p) => {
-                    ports_to_expose.insert(p.to_string(), HashMap::new());
+                    port_bindings.insert(
+                        format!("{}/tcp", p),
+                        Some(vec![PortBinding {
+                            host_ip: Some("0.0.0.0".to_string()),
+                            host_port: Some(format!("{}", p)),
+                        }]),
+                    );
+                    ports_exposed.insert(format!("{}/tcp", p), HashMap::new());
                 }
                 AppPort::Ports(ports) => {
                     for p in ports {
-                        ports_to_expose.insert(format!("{}/tcp", p), HashMap::new());
+                        port_bindings.insert(
+                            format!("{}/tcp", p),
+                            Some(vec![PortBinding {
+                                host_ip: Some(String::from("0.0.0.0")),
+                                host_port: Some(format!("{}", p)),
+                            }]),
+                        );
+                        ports_exposed.insert(format!("{}/tcp", p), HashMap::new());
                     }
                 }
                 AppPort::PortStr(p_str) => {
-                    let p = p_str
-                        .parse::<u32>()
-                        .map_err(|err| Error::InvalidConfig(err.to_string()))?;
-                    ports_to_expose.insert(format!("{}/tcp", p), HashMap::new());
+                    port_bindings.insert(
+                        format!("{}/tcp", p_str),
+                        Some(vec![PortBinding {
+                            host_ip: Some(String::from("0.0.0.0")),
+                            host_port: Some(p_str.clone()),
+                        }]),
+                    );
+                    ports_exposed.insert(format!("{}/tcp", p_str), HashMap::new());
                 }
             };
         }
 
-        config.exposed_ports = Some(ports_to_expose);
+        host_config.port_bindings = Some(port_bindings);
+        config.host_config = Some(host_config);
+
+        config.exposed_ports = Some(ports_exposed);
 
         Ok(())
     }
@@ -225,30 +259,44 @@ impl Project {
         devcontainer: &DevContainer,
         config: &mut container::Config<String>,
     ) -> Result<(), Error> {
-        let mut mounts: HashMap<String, HashMap<(), ()>> = HashMap::new();
+        let mut host_config = match config.host_config.clone() {
+            Some(hc) => hc,
+            None => HostConfig::default(),
+        };
+
+        let mut mounts = match host_config.mounts.clone() {
+            Some(m) => m,
+            None => vec![],
+        };
 
         let wk_mount = match devcontainer.workspace_mount.as_ref() {
             None => {
                 let current_dir = self.path.to_str().unwrap();
-                // TODO this needs improvement: use consistency:cached
-                //format!("{}:/workspace", current_dir)
-                format!(
-                    "source={},target=/workspace,type=bind,consistency=cached",
+                debug!(
+                    "Mounting default workspace folder: {} to /workspace",
                     current_dir
-                )
+                );
+                Mount::parse_from_str(
+                    format!(
+                        "source={},target=/workspace,type=bind,consistency=cached",
+                        current_dir,
+                    )
+                    .as_str(),
+                )?
             }
-            Some(p) => p.clone(),
+            Some(p) => Mount::parse_from_str(p.as_str())?,
         };
 
-        mounts.insert(wk_mount, HashMap::new());
+        mounts.push(wk_mount);
 
         if let Some(dev_mounts) = devcontainer.mounts.as_ref() {
             for m in dev_mounts.iter() {
-                mounts.insert(m.clone(), HashMap::new());
+                mounts.push(Mount::parse_from_str(m.as_str())?);
             }
         }
 
-        config.volumes = Some(mounts);
+        host_config.mounts = Some(mounts);
+        config.host_config = Some(host_config);
 
         Ok(())
     }
@@ -275,19 +323,54 @@ impl Project {
         Ok(())
     }
 
+    async fn check_is_container_running(
+        &self,
+        docker: &Docker,
+        name: String,
+    ) -> Result<Option<String>, Error> {
+        let label_name: String = format!("devcontainer_name={}", name);
+
+        let mut filters = HashMap::new();
+        filters.insert("label", vec!["devcontainer=true", label_name.as_str()]);
+
+        let options = Some(ListContainersOptions {
+            all: true,
+            filters,
+            ..Default::default()
+        });
+
+        let result = docker.list_containers(options).await?;
+
+        if result.len() > 0 {
+            return Ok(result[0].id.clone());
+        }
+
+        Ok(None)
+    }
+
     async fn up_docker(
         &self,
         docker: &Docker,
         devcontainer: &DevContainer,
         image: String,
     ) -> Result<String, Error> {
+        let container_label = devcontainer.get_name(&self.path);
+
+        if let Some(id) = self
+            .check_is_container_running(docker, container_label.clone())
+            .await?
+        {
+            info!("Container is already running. Id = '{}'", id);
+            if let Some(cmd) = devcontainer.post_attach_command.as_ref() {
+                self.docker_exec(docker, id.clone(), cmd).await?;
+            }
+            return Ok(id);
+        }
+
         let mut config: container::Config<String> = container::Config {
             image: Some(image.clone()),
             ..Default::default()
         };
-
-        self.container_opts_build_ports(devcontainer, &mut config)
-            .await?;
 
         self.container_opts_build_envs(devcontainer, &mut config)
             .await?;
@@ -295,11 +378,15 @@ impl Project {
         self.container_opts_build_mounts(devcontainer, &mut config)
             .await?;
 
+        self.container_opts_build_ports(devcontainer, &mut config)
+            .await?;
+
         self.container_opts_build_cmd(devcontainer, &mut config)
             .await?;
 
         let mut labels = HashMap::new();
         labels.insert("devcontainer".to_string(), "true".to_string());
+        labels.insert("devcontainer_name".to_string(), container_label);
 
         config.labels = Some(labels);
         let mut container_options: Option<CreateContainerOptions<String>> = None;
@@ -342,7 +429,29 @@ impl Project {
             .create_container::<String, String>(container_options, config)
             .await?;
 
-        Ok(info.id)
+        let id = info.id;
+
+        info!("Starting container");
+        docker
+            .start_container(id.as_str(), None::<StartContainerOptions<String>>)
+            .await?;
+
+        // postCreateCommand
+        if let Some(cmd) = devcontainer.post_create_command.as_ref() {
+            self.docker_exec(docker, id.clone(), cmd).await?;
+        }
+
+        // postStartCommand
+        if let Some(cmd) = devcontainer.post_start_command.as_ref() {
+            self.docker_exec(docker, id.clone(), cmd).await?;
+        }
+
+        // postAttachCommand
+        if let Some(cmd) = devcontainer.post_attach_command.as_ref() {
+            self.docker_exec(docker, id.clone(), cmd).await?;
+        }
+
+        Ok(id)
     }
 
     fn docker_format_image(&self, image: String) -> String {
@@ -364,21 +473,6 @@ impl Project {
 
         info!("Creating container from: {}", image);
         let id = self.up_docker(&docker, devcontainer, image).await?;
-
-        info!("Starting container");
-        docker
-            .start_container(id.as_str(), None::<StartContainerOptions<String>>)
-            .await?;
-
-        // postCreateCommand
-        if let Some(cmd) = devcontainer.post_create_command.as_ref() {
-            self.docker_exec(docker, id.clone(), cmd).await?;
-        }
-
-        // postStartCommand
-        if let Some(cmd) = devcontainer.post_start_command.as_ref() {
-            self.docker_exec(docker, id.clone(), cmd).await?;
-        }
 
         Ok(id)
     }

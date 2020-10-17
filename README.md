@@ -31,7 +31,7 @@ This will start the proper containers based on the settings provided in `.devcon
 ```json
 {
     ...
-    "application": { "cmd": ["nvim-qt", "--server", "9797", "--nofork"] },
+    "application": { "cmd": ["nvim-qt", "--server", "127.0.0.1:9797", "--nofork"] },
     ...
 }
 ```
