@@ -27,7 +27,7 @@ async fn main() {
         .author("Gustavo Sampaio <gbritosampaio@gmail.com>")
         .about("An open-source runner for the devcontainer format")
         .arg(
-            Arg::with_name("dicker host")
+            Arg::with_name("docker host")
                 .short("a")
                 .long("host")
                 .value_name("STRING")
