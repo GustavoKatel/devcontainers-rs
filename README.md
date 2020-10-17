@@ -3,7 +3,7 @@
 For those who want to try out VSCode's devcontainers without VSCode.
 
 This project is mostly aiming to bring the VSCode's remote development experience to neovim, but at
-the end others editors/clients can be attached to.
+the end others editors/clients can be attached too.
 
 Please refer to the devcontainer.json [reference](https://code.visualstudio.com/docs/remote/devcontainerjson-reference)
 
