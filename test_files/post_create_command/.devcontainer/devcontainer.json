@@ -1,5 +1,6 @@
 {
 	"name": "up_image",
     "image": "ubuntu:20.04",
-    "postCreateCommand": ["echo", "ok"]
+    "postCreateCommand": ["echo", "create"],
+    "postStartCommand": ["echo", "start"]
 }

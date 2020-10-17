@@ -1,5 +1,4 @@
 {
-	"name": "up_image",
     "image": "ubuntu:20.04",
     "postCreateCommand": ["bash", "/workspace/.devcontainer/install-nvim.sh"],
     "application": { "cmd": ["nvim-qt", "--server", "9797", "--nofork"] }

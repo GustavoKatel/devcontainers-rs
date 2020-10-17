@@ -1,7 +1,8 @@
 use bollard::{
-    container::{self, StartContainerOptions},
+    container::{self, ListContainersOptions, StartContainerOptions},
     exec::{CreateExecOptions, StartExecOptions, StartExecResults},
     image::CreateImageOptions,
+    service::{HostConfig, Mount},
     Docker, API_DEFAULT_VERSION,
 };
 use futures::StreamExt;
@@ -14,6 +15,7 @@ use tokio::signal;
 
 use crate::devcontainer::*;
 use crate::errors::*;
+use crate::mount_from_str::*;
 
 pub struct Project {
     pub path: PathBuf,
@@ -131,6 +133,8 @@ impl Project {
         id: String,
         cmd: &CommandLineVec,
     ) -> Result<(), Error> {
+        info!("Executing command in container: {}", id);
+
         let options = CreateExecOptions {
             cmd: Some(cmd.to_args_vec()),
             attach_stdout: Some(true),
@@ -142,7 +146,6 @@ impl Project {
 
         let mut stream = docker.start_exec(exec.id.as_str(), None::<StartExecOptions>);
 
-        info!("Executing command in container: {}", id);
         debug!("Args: {:?}", cmd.to_args_vec());
         while let Some(exec_result) = stream.next().await {
             match exec_result? {
@@ -217,30 +220,44 @@ impl Project {
         devcontainer: &DevContainer,
         config: &mut container::Config<String>,
     ) -> Result<(), Error> {
-        let mut mounts: HashMap<String, HashMap<(), ()>> = HashMap::new();
+        let mut host_config = match config.host_config.clone() {
+            Some(hc) => hc,
+            None => HostConfig::default(),
+        };
+
+        let mut mounts = match host_config.mounts.clone() {
+            Some(m) => m,
+            None => vec![],
+        };
 
         let wk_mount = match devcontainer.workspace_mount.as_ref() {
             None => {
                 let current_dir = self.path.to_str().unwrap();
-                // TODO this needs improvement: use consistency:cached
-                //format!("{}:/workspace", current_dir)
-                format!(
-                    "source={},target=/workspace,type=bind,consistency=cached",
+                debug!(
+                    "Mounting default workspace folder: {} to /workspace",
                     current_dir
-                )
+                );
+                Mount::parse_from_str(
+                    format!(
+                        "source={},target=/workspace,type=bind,consistency=cached",
+                        current_dir,
+                    )
+                    .as_str(),
+                )?
             }
-            Some(p) => p.clone(),
+            Some(p) => Mount::parse_from_str(p.as_str())?,
         };
 
-        mounts.insert(wk_mount, HashMap::new());
+        mounts.push(wk_mount);
 
         if let Some(dev_mounts) = devcontainer.mounts.as_ref() {
             for m in dev_mounts.iter() {
-                mounts.insert(m.clone(), HashMap::new());
+                mounts.push(Mount::parse_from_str(m.as_str())?);
             }
         }
 
-        config.volumes = Some(mounts);
+        host_config.mounts = Some(mounts);
+        config.host_config = Some(host_config);
 
         Ok(())
     }
@@ -267,12 +284,50 @@ impl Project {
         Ok(())
     }
 
+    async fn check_is_container_running(
+        &self,
+        docker: &Docker,
+        name: String,
+    ) -> Result<Option<String>, Error> {
+        let label_name: String = format!("devcontainer_name={}", name);
+
+        let mut filters = HashMap::new();
+        filters.insert("label", vec!["devcontainer=true", label_name.as_str()]);
+
+        let options = Some(ListContainersOptions {
+            all: true,
+            filters,
+            ..Default::default()
+        });
+
+        let result = docker.list_containers(options).await?;
+
+        if result.len() > 0 {
+            return Ok(result[0].id.clone());
+        }
+
+        Ok(None)
+    }
+
     async fn up_docker(
         &self,
         docker: &Docker,
         devcontainer: &DevContainer,
         image: String,
     ) -> Result<String, Error> {
+        let container_label = devcontainer.get_name(&self.path);
+
+        if let Some(id) = self
+            .check_is_container_running(docker, container_label.clone())
+            .await?
+        {
+            info!("Container is already running. Id = '{}'", id);
+            if let Some(cmd) = devcontainer.post_attach_command.as_ref() {
+                self.docker_exec(docker, id.clone(), cmd).await?;
+            }
+            return Ok(id);
+        }
+
         let mut config: container::Config<String> = container::Config {
             image: Some(image),
             ..Default::default()
@@ -292,6 +347,7 @@ impl Project {
 
         let mut labels = HashMap::new();
         labels.insert("devcontainer".to_string(), "true".to_string());
+        labels.insert("devcontainer_name".to_string(), container_label);
 
         config.labels = Some(labels);
 
@@ -299,7 +355,24 @@ impl Project {
             .create_container::<String, String>(None, config)
             .await?;
 
-        Ok(info.id)
+        let id = info.id;
+
+        info!("Starting container");
+        docker
+            .start_container(id.as_str(), None::<StartContainerOptions<String>>)
+            .await?;
+
+        // postCreateCommand
+        if let Some(cmd) = devcontainer.post_create_command.as_ref() {
+            self.docker_exec(docker, id.clone(), cmd).await?;
+        }
+
+        // postStartCommand
+        if let Some(cmd) = devcontainer.post_start_command.as_ref() {
+            self.docker_exec(docker, id.clone(), cmd).await?;
+        }
+
+        Ok(id)
     }
 
     fn docker_format_image(&self, image: String) -> String {
@@ -321,21 +394,6 @@ impl Project {
 
         info!("Creating container from: {}", image);
         let id = self.up_docker(&docker, devcontainer, image).await?;
-
-        info!("Starting container");
-        docker
-            .start_container(id.as_str(), None::<StartContainerOptions<String>>)
-            .await?;
-
-        // postCreateCommand
-        if let Some(cmd) = devcontainer.post_create_command.as_ref() {
-            self.docker_exec(docker, id.clone(), cmd).await?;
-        }
-
-        // postStartCommand
-        if let Some(cmd) = devcontainer.post_start_command.as_ref() {
-            self.docker_exec(docker, id.clone(), cmd).await?;
-        }
 
         Ok(id)
     }
