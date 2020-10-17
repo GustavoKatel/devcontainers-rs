@@ -1,0 +1,5 @@
+{
+	"name": "up_image",
+    "image": "ubuntu:20.04",
+    "application": { "cmd": ["nvim-qt", "--server", "9797", "--nofork"] }
+}
