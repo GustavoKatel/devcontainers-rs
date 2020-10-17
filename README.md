@@ -42,14 +42,24 @@ This will start the proper containers based on the settings provided in `.devcon
 ✅ - DONE
 
 [⚙️] create containers based on image
+
 [⚙️] spawn custom application
+
 [⚙️] `postCreateCommand`, `postStartCommand`, `postAttachCommand`
+
 [⚙️] `appPort`
+
 [ ] `devPort`
+
 [ ] `forwardPorts`
+
 [ ] `initializeCommand`
+
 [ ] create containers based on `build`
+
 [ ] create containers from docker-compose
+
 [ ] destroy/stop containers
+
 [ ] user management (`remoteUser`,  `containerUser`, `updateRemoteUserUID`)
 
