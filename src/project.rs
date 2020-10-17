@@ -1,5 +1,5 @@
 use bollard::{
-    container::{self, StartContainerOptions},
+    container::{self, StartContainerOptions, CreateContainerOptions, ListContainersOptions},
     exec::{CreateExecOptions, StartExecOptions, StartExecResults},
     image::CreateImageOptions,
     Docker, API_DEFAULT_VERSION,
@@ -282,7 +282,7 @@ impl Project {
         image: String,
     ) -> Result<String, Error> {
         let mut config: container::Config<String> = container::Config {
-            image: Some(image),
+            image: Some(image.clone()),
             ..Default::default()
         };
 
@@ -302,9 +302,44 @@ impl Project {
         labels.insert("devcontainer".to_string(), "true".to_string());
 
         config.labels = Some(labels);
+        let mut container_options: Option<CreateContainerOptions<String>> = None;
+
+        if let Some(filename) = self.path.file_name() {
+            if let Some(filename) = filename.to_str() {
+                let image_name: &str = image.split(':').next().unwrap();
+
+                // Use unique id to avoid collision with existing containers
+                for id in 1..20 {
+                    let name = format!("{}_devcontainer_{}_{}", filename, image_name, id);
+
+                    let mut filters = HashMap::new();
+                    filters.insert("name", vec![name.as_str()]);
+
+                    let options = Some(ListContainersOptions{
+                        all: true,
+                        filters: filters,
+                        ..std::default::Default::default()
+                    });
+
+                    // Check if an existing container has this name
+                    if let Ok(containers) = docker.list_containers(options).await {
+                        if containers.len() > 0 {
+                            continue;
+                        }
+                    }
+
+                    container_options = Some(CreateContainerOptions{
+                        name
+                    });
+
+                    break;
+                }
+
+            }
+        }
 
         let info = docker
-            .create_container::<String, String>(None, config)
+            .create_container::<String, String>(container_options, config)
             .await?;
 
         Ok(info.id)
