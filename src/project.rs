@@ -21,6 +21,14 @@ use flate2::write::GzEncoder;
 use crate::devcontainer::*;
 use crate::errors::*;
 use crate::mount_from_str::*;
+use crate::settings::*;
+
+#[derive(Debug)]
+pub enum CommandHook {
+    PostCreate,
+    PostStart,
+    PostAttach,
+}
 
 pub struct Project {
     pub path: PathBuf,
@@ -29,6 +37,8 @@ pub struct Project {
     pub docket_host: Option<String>,
 
     pub devcontainer: Option<DevContainer>,
+
+    pub settings: Option<Settings>,
 }
 
 impl std::default::Default for Project {
@@ -41,6 +51,8 @@ impl std::default::Default for Project {
             docket_host: None,
 
             devcontainer: None,
+
+            settings: None,
         }
     }
 }
@@ -74,6 +86,8 @@ impl Project {
     }
 
     pub async fn load(&mut self) -> Result<(), Error> {
+        self.settings = Some(Settings::load().await?);
+
         let mut filename = self.path.clone();
         filename.push(".devcontainer");
         filename.push(self.filename.clone());
@@ -105,7 +119,13 @@ impl Project {
 
     async fn spawn_application(&self, devcontainer: &DevContainer) -> Result<Child, Error> {
         info!("Found application settings. Spawning");
-        let application = devcontainer.application.as_ref().unwrap();
+        let application = self
+            .settings
+            .as_ref()
+            .unwrap()
+            .application
+            .as_ref()
+            .unwrap();
 
         let args = application.cmd.to_args_vec();
 
@@ -184,6 +204,27 @@ impl Project {
                 },
                 StartExecResults::Detached => { /*nothing to do here*/ }
             }
+        }
+
+        Ok(())
+    }
+
+    async fn run_hook(
+        &self,
+        docker: &Docker,
+        devcontainer: &DevContainer,
+        container_id: String,
+        hook: CommandHook,
+    ) -> Result<(), Error> {
+        let cmd_st = match hook {
+            CommandHook::PostCreate => devcontainer.post_create_command.as_ref(),
+            CommandHook::PostStart => devcontainer.post_start_command.as_ref(),
+            CommandHook::PostAttach => devcontainer.post_attach_command.as_ref(),
+        };
+
+        if let Some(cmd) = cmd_st {
+            info!("Executing hook: {:?}", hook);
+            return self.docker_exec(docker, container_id, cmd).await;
         }
 
         Ok(())
@@ -308,6 +349,13 @@ impl Project {
             }
         }
 
+        if let Some(user_mounts) = self.settings.as_ref().unwrap().mounts.as_ref() {
+            for m in user_mounts.iter() {
+                debug!("Adding user mount: {}", m);
+                mounts.push(Mount::parse_from_str(m.as_str())?);
+            }
+        }
+
         host_config.mounts = Some(mounts);
         config.host_config = Some(host_config);
 
@@ -391,14 +439,12 @@ impl Project {
                     .await?;
 
                 // postStartCommand
-                if let Some(cmd) = devcontainer.post_start_command.as_ref() {
-                    self.docker_exec(docker, id.clone(), cmd).await?;
-                }
+                self.run_hook(docker, devcontainer, id.clone(), CommandHook::PostStart)
+                    .await?;
             }
 
-            if let Some(cmd) = devcontainer.post_attach_command.as_ref() {
-                self.docker_exec(docker, id.clone(), cmd).await?;
-            }
+            self.run_hook(docker, devcontainer, id.clone(), CommandHook::PostAttach)
+                .await?;
             return Ok(id.clone());
         }
 
@@ -469,19 +515,16 @@ impl Project {
             .await?;
 
         // postCreateCommand
-        if let Some(cmd) = devcontainer.post_create_command.as_ref() {
-            self.docker_exec(docker, id.clone(), cmd).await?;
-        }
+        self.run_hook(docker, devcontainer, id.clone(), CommandHook::PostCreate)
+            .await?;
 
         // postStartCommand
-        if let Some(cmd) = devcontainer.post_start_command.as_ref() {
-            self.docker_exec(docker, id.clone(), cmd).await?;
-        }
+        self.run_hook(docker, devcontainer, id.clone(), CommandHook::PostStart)
+            .await?;
 
         // postAttachCommand
-        if let Some(cmd) = devcontainer.post_attach_command.as_ref() {
-            self.docker_exec(docker, id.clone(), cmd).await?;
-        }
+        self.run_hook(docker, devcontainer, id.clone(), CommandHook::PostAttach)
+            .await?;
 
         Ok(id)
     }
@@ -639,22 +682,34 @@ impl Project {
 
         if !existed_before {
             // postCreateCommand
-            if let Some(cmd) = devcontainer.post_create_command.as_ref() {
-                self.docker_exec(docker, container_id.clone(), cmd).await?;
-            }
+            self.run_hook(
+                docker,
+                devcontainer,
+                container_id.clone(),
+                CommandHook::PostCreate,
+            )
+            .await?;
         }
 
         if !was_running_before {
             // postStartCommand
-            if let Some(cmd) = devcontainer.post_start_command.as_ref() {
-                self.docker_exec(docker, container_id.clone(), cmd).await?;
-            }
+            self.run_hook(
+                docker,
+                devcontainer,
+                container_id.clone(),
+                CommandHook::PostStart,
+            )
+            .await?;
         }
 
         // postAttachCommand
-        if let Some(cmd) = devcontainer.post_attach_command.as_ref() {
-            self.docker_exec(docker, container_id.clone(), cmd).await?;
-        }
+        self.run_hook(
+            docker,
+            devcontainer,
+            container_id.clone(),
+            CommandHook::PostAttach,
+        )
+        .await?;
 
         Ok(container_id.clone())
     }
@@ -686,7 +741,7 @@ impl Project {
 
         info!("Containers are ready: {}", container_id);
 
-        let child = if devcontainer.application.is_some() {
+        let child = if self.settings.as_ref().unwrap().application.is_some() {
             Some(self.spawn_application(devcontainer).await?)
         } else {
             None

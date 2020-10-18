@@ -308,6 +308,7 @@ version = "0.1.0"
 dependencies = [
  "bollard",
  "clap",
+ "dirs",
  "env_logger",
  "flate2",
  "futures 0.3.6",

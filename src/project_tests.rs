@@ -5,10 +5,10 @@ use crate::project::*;
 
 #[tokio::test]
 async fn test_new() {
-    let dc = Project::new(Some(PathBuf::from("/tmp")), None);
+    let dc = Project::new(Some(PathBuf::from("/tmp")), None).unwrap();
     assert_eq!(dc.path.to_str().unwrap(), "/tmp");
 
-    let dc = Project::new(None, None);
+    let dc = Project::new(None, None).unwrap();
     let dir = std::env::current_dir().unwrap();
     assert_eq!(dc.path.to_str().unwrap(), dir.to_str().unwrap())
 }
@@ -18,14 +18,14 @@ async fn test_validate_valid() {
     let mut dir = std::env::current_dir().unwrap();
     dir.push("test_files");
     dir.push("docker-compose");
-    let mut dc = Project::new(Some(dir), None);
+    let mut dc = Project::new(Some(dir), None).unwrap();
     dc.load().await.unwrap();
 }
 
 #[tokio::test]
 async fn test_validate_does_not_exist() {
     let dir = PathBuf::from("abc");
-    let mut dc = Project::new(Some(dir), None);
+    let mut dc = Project::new(Some(dir), None).unwrap();
 
     match dc.load().await {
         Err(super::errors::Error::ConfigDoesNotExist(_)) => {}
@@ -38,7 +38,7 @@ async fn test_validate_invalid() {
     let mut dir = std::env::current_dir().unwrap();
     dir.push("test_files");
     dir.push("invalid");
-    let mut dc = Project::new(Some(dir), None);
+    let mut dc = Project::new(Some(dir), None).unwrap();
 
     match dc.load().await {
         Err(super::errors::Error::InvalidConfig(_)) => {}

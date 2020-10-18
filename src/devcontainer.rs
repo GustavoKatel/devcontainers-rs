@@ -74,8 +74,6 @@ pub struct DevContainer {
 
     #[serde(rename = "devPort", default)]
     pub dev_port: i32,
-
-    pub application: Option<Application>,
 }
 
 #[derive(Deserialize)]
@@ -110,11 +108,6 @@ pub enum DockerComposeFile {
 pub enum CommandLineVec {
     Line(String),
     Args(Vec<String>),
-}
-
-#[derive(Deserialize)]
-pub struct Application {
-    pub cmd: CommandLineVec,
 }
 
 #[derive(Debug, PartialEq)]
