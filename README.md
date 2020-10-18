@@ -34,7 +34,8 @@ Available settings: `application` (object), `mounts` (object), `postCreateComman
 {
     ...
     "application": { "cmd": ["nvim-qt", "--server", "127.0.0.1:9797", "--nofork"] },
-    "forwardPorts": [7777]
+    "forwardPorts": [9797],
+    "postAttachCommand": ["bash", "start-headless-nvim.sh"]
     ...
 }
 ```
