@@ -1,0 +1,7 @@
+{
+	"name": "Ubuntu",
+	"build": {
+		"dockerfile": "Dockerfile",
+		"args": { "VARIANT": "18.04" }
+	}
+}

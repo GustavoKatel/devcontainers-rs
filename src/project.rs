@@ -1,7 +1,7 @@
 use bollard::{
     container::{self, StartContainerOptions, CreateContainerOptions, ListContainersOptions},
     exec::{CreateExecOptions, StartExecOptions, StartExecResults},
-    image::CreateImageOptions,
+    image::{CreateImageOptions, BuildImageOptions},
     service::{HostConfig, Mount, PortBinding},
     Docker, API_DEFAULT_VERSION,
 };
@@ -12,6 +12,8 @@ use std::path::PathBuf;
 use tokio::fs;
 use tokio::process::{Child, Command};
 use tokio::signal;
+use flate2::Compression;
+use flate2::write::GzEncoder;
 
 use crate::devcontainer::*;
 use crate::errors::*;
@@ -107,6 +109,10 @@ impl Project {
             .spawn()
             .map_err(|err| UpError::ApplicationSpawn(err.to_string()))?;
         Ok(child)
+    }
+
+    async fn docker_build_image(&self, docker: &Docker, image: String) -> Result<(), UpError> {
+        Ok(())
     }
 
     async fn docker_pull_image(&self, docker: &Docker, image: String) -> Result<(), UpError> {
@@ -482,7 +488,26 @@ impl Project {
         docker: &Docker,
         devcontainer: &DevContainer,
     ) -> Result<String, Error> {
-        todo!()
+        let mut devcontainer_dir = self.path.clone();
+        devcontainer_dir.push(".devcontainer");
+
+        // API reads the Dockerfile from a tarball
+        let enc = GzEncoder::new(Vec::new(), Compression::default());
+        let mut tar = tar::Builder::new(enc);
+        tar.append_dir_all("devcontainer/", devcontainer_dir).unwrap();
+        let dockerfile_path: PathBuf = ["devcontainer", &devcontainer.build.as_ref().unwrap().dockerfile].iter().collect();
+
+        let options = BuildImageOptions{
+            dockerfile: dockerfile_path.to_str().unwrap(),
+            t: "devcontainer-image",
+            rm: true,
+            ..std::default::Default::default()
+        };
+
+        let info: bollard::service::CreateImageInfo = docker.build_image(options, None, Some(tar.into_inner().unwrap().finish().unwrap().into())).collect().await;
+        println!("-------- {:#?}", info);
+        
+        Ok(String::new())
     }
 
     async fn up_from_compose<'a>(
