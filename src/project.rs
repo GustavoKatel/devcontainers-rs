@@ -4,7 +4,7 @@ use bollard::{
         StopContainerOptions,
     },
     exec::{CreateExecOptions, StartExecOptions, StartExecResults},
-    image::CreateImageOptions,
+    image::{CreateImageOptions, BuildImageOptions},
     service::{ContainerSummaryInner, HostConfig, Mount, PortBinding},
     Docker, API_DEFAULT_VERSION,
 };
@@ -15,6 +15,8 @@ use std::path::PathBuf;
 use tokio::fs;
 use tokio::process::{Child, Command};
 use tokio::signal;
+use flate2::Compression;
+use flate2::write::GzEncoder;
 
 use crate::devcontainer::*;
 use crate::errors::*;
@@ -69,16 +71,13 @@ pub struct ProjectOpts {
 impl Project {
     pub fn new(opts: ProjectOpts) -> Result<Self, Error> {
         let mut dc = Self::default();
-        let mut path = if let Some(pb) = opts.path.as_ref() {
-            pb.clone()
-        } else {
-            PathBuf::new()
-        };
+        if let Some(pb) = opts.path.as_ref() {
+            pb.canonicalize()
+                .map_err(|err| Error::InvalidConfig(err.to_string()))?;
+            dc.path = pb.clone();
+        }
 
-        path.canonicalize()
-            .map_err(|err| Error::InvalidConfig(err.to_string()))?;
-
-        for ancestor in path.ancestors() {
+        for ancestor in dc.path.clone().ancestors() {
             if ancestor.join(".devcontainer").exists() {
                 dc.path = ancestor
                     .to_path_buf()
@@ -157,6 +156,10 @@ impl Project {
             .spawn()
             .map_err(|err| UpError::ApplicationSpawn(err.to_string()))?;
         Ok(child)
+    }
+
+    async fn docker_build_image(&self, docker: &Docker, image: String) -> Result<(), UpError> {
+        Ok(())
     }
 
     async fn docker_pull_image(&self, docker: &Docker, image: String) -> Result<(), UpError> {
@@ -627,7 +630,26 @@ impl Project {
         docker: &Docker,
         devcontainer: &DevContainer,
     ) -> Result<String, Error> {
-        todo!()
+        let mut devcontainer_dir = self.path.clone();
+        devcontainer_dir.push(".devcontainer");
+
+        // API reads the Dockerfile from a tarball
+        let enc = GzEncoder::new(Vec::new(), Compression::default());
+        let mut tar = tar::Builder::new(enc);
+        tar.append_dir_all("devcontainer/", devcontainer_dir).unwrap();
+        let dockerfile_path: PathBuf = ["devcontainer", &devcontainer.build.as_ref().unwrap().dockerfile].iter().collect();
+
+        let options = BuildImageOptions{
+            dockerfile: dockerfile_path.to_str().unwrap(),
+            t: "devcontainer-image",
+            rm: true,
+            ..std::default::Default::default()
+        };
+
+        //let info: bollard::service::CreateImageInfo = docker.build_image(options, None, Some(tar.into_inner().unwrap().finish().unwrap().into())).collect().await;
+        //println!("-------- {:#?}", info);
+
+        Ok(String::new())
     }
 
     fn build_docker_compose_cmd<'a>(

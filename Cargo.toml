@@ -8,6 +8,8 @@ edition = "2018"
 
 [dependencies]
 clap = "2.33.3"
+tar = "0.4.30"
+flate2 = { version = "0.2", features = ["tokio"] }
 tokio = { version = "0.2", features = ["full"] }
 serde = { version = "1.0.117", features = ["derive"] }
 json5 = "0.2.8"
