@@ -69,6 +69,8 @@ impl Project {
         path.canonicalize()
             .map_err(|err| Error::InvalidConfig(err.to_string()))?;
 
+        dc.path = path.clone();
+
         for ancestor in path.ancestors() {
             if ancestor.join(".devcontainer").exists() {
                 dc.path = ancestor
