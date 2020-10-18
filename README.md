@@ -7,7 +7,7 @@ the end others editors/clients can be attached too.
 
 Please refer to the devcontainer.json [reference](https://code.visualstudio.com/docs/remote/devcontainerjson-reference)
 
-**⚠️ This is in actively development and rapidly growing! Use at your own risk. And feel free to
+**⚠️ This is in active development and rapidly growing! Use at your own risk. And feel free to
 play around and let me know in the issues what features you'd like to see here. ⚠️**
 
 ## Requirements

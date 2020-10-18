@@ -48,7 +48,7 @@ async fn main() {
             SubCommand::with_name("up")
                 .about("starts the devcontainer")
                 .arg(
-                    Arg::with_name("no wait")
+                    Arg::with_name("no-wait")
                         .short("d")
                         .long("no-wait")
                         .help("Do not wait for the client")
@@ -73,6 +73,7 @@ async fn main() {
 
             project.up(should_wait).await
         }
+        ("down", Some(_)) => project.down(None, false).await,
         _ => Ok(()),
     };
 

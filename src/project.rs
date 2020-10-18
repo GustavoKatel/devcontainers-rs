@@ -1,8 +1,11 @@
 use bollard::{
-    container::{self, StartContainerOptions, CreateContainerOptions, ListContainersOptions},
+    container::{
+        self, CreateContainerOptions, ListContainersOptions, StartContainerOptions,
+        StopContainerOptions,
+    },
     exec::{CreateExecOptions, StartExecOptions, StartExecResults},
     image::{CreateImageOptions, BuildImageOptions},
-    service::{HostConfig, Mount, PortBinding},
+    service::{ContainerSummaryInner, HostConfig, Mount, PortBinding},
     Docker, API_DEFAULT_VERSION,
 };
 use futures::StreamExt;
@@ -51,12 +54,16 @@ impl Project {
             PathBuf::new()
         };
 
-        path.canonicalize().map_err(|err| Error::InvalidConfig(err.to_string()))?;
+        path.canonicalize()
+            .map_err(|err| Error::InvalidConfig(err.to_string()))?;
 
         for ancestor in path.ancestors() {
             if ancestor.join(".devcontainer").exists() {
-                dc.path = ancestor.to_path_buf().canonicalize().map_err(|err| Error::InvalidConfig(err.to_string()))?;
-            } 
+                dc.path = ancestor
+                    .to_path_buf()
+                    .canonicalize()
+                    .map_err(|err| Error::InvalidConfig(err.to_string()))?;
+            }
         }
 
         if let Some(f) = filename {
@@ -329,29 +336,37 @@ impl Project {
         Ok(())
     }
 
-    async fn check_is_container_running(
+    async fn get_container_from_filters(
         &self,
         docker: &Docker,
-        name: String,
-    ) -> Result<Option<String>, Error> {
-        let label_name: String = format!("devcontainer_name={}", name);
-
-        let mut filters = HashMap::new();
-        filters.insert("label", vec!["devcontainer=true", label_name.as_str()]);
-
+        filters: &HashMap<&str, Vec<&str>>,
+    ) -> Result<Option<ContainerSummaryInner>, Error> {
         let options = Some(ListContainersOptions {
             all: true,
-            filters,
+            filters: filters.clone(),
             ..Default::default()
         });
 
         let result = docker.list_containers(options).await?;
 
         if result.len() > 0 {
-            return Ok(result[0].id.clone());
+            return Ok(Some(result[0].clone()));
         }
 
         Ok(None)
+    }
+
+    async fn check_is_container_running_from_name(
+        &self,
+        docker: &Docker,
+        name: String,
+    ) -> Result<Option<ContainerSummaryInner>, Error> {
+        let label_name: String = format!("devcontainer_name={}", name);
+
+        let mut filters = HashMap::new();
+        filters.insert("label", vec!["devcontainer=true", label_name.as_str()]);
+
+        self.get_container_from_filters(docker, &filters).await
     }
 
     async fn up_docker(
@@ -362,15 +377,29 @@ impl Project {
     ) -> Result<String, Error> {
         let container_label = devcontainer.get_name(&self.path);
 
-        if let Some(id) = self
-            .check_is_container_running(docker, container_label.clone())
+        if let Some(stat) = self
+            .check_is_container_running_from_name(docker, container_label.clone())
             .await?
         {
-            info!("Container is already running. Id = '{}'", id);
+            let id = stat.id.as_ref().unwrap();
+            info!("Found container with id = '{}'", id);
+
+            // if container is not running, try to start it
+            if stat.state.as_ref().unwrap() != "running" {
+                docker
+                    .start_container(id, None::<StartContainerOptions<String>>)
+                    .await?;
+
+                // postStartCommand
+                if let Some(cmd) = devcontainer.post_start_command.as_ref() {
+                    self.docker_exec(docker, id.clone(), cmd).await?;
+                }
+            }
+
             if let Some(cmd) = devcontainer.post_attach_command.as_ref() {
                 self.docker_exec(docker, id.clone(), cmd).await?;
             }
-            return Ok(id);
+            return Ok(id.clone());
         }
 
         let mut config: container::Config<String> = container::Config {
@@ -408,7 +437,7 @@ impl Project {
                     let mut filters = HashMap::new();
                     filters.insert("name", vec![name.as_str()]);
 
-                    let options = Some(ListContainersOptions{
+                    let options = Some(ListContainersOptions {
                         all: true,
                         filters: filters,
                         ..std::default::Default::default()
@@ -421,13 +450,10 @@ impl Project {
                         }
                     }
 
-                    container_options = Some(CreateContainerOptions{
-                        name
-                    });
+                    container_options = Some(CreateContainerOptions { name });
 
                     break;
                 }
-
             }
         }
 
@@ -510,12 +536,127 @@ impl Project {
         Ok(String::new())
     }
 
+    fn build_docker_compose_cmd<'a>(
+        &self,
+        devcontainer: &'a DevContainer,
+        project_name: &'a str,
+        extended_args: Option<Vec<&'a str>>,
+    ) -> Vec<&'a str> {
+        let mut compose_args: Vec<&str> = vec!["docker-compose", "-p", project_name];
+
+        match devcontainer.docker_compose_file.as_ref().unwrap() {
+            DockerComposeFile::File(file) => {
+                compose_args.push("-f");
+                compose_args.push(file.as_str());
+            }
+            DockerComposeFile::Files(files) => {
+                for file in files {
+                    compose_args.push("-f");
+                    compose_args.push(file.as_str());
+                }
+            }
+        };
+
+        if let Some(ext_args) = extended_args {
+            compose_args.extend(ext_args);
+        }
+
+        compose_args
+    }
+
     async fn up_from_compose<'a>(
         &self,
         docker: &Docker,
         devcontainer: &DevContainer,
     ) -> Result<String, Error> {
-        todo!()
+        let project_name = devcontainer.get_name(&self.path);
+
+        let project_label = format!("com.docker.compose.project={}", project_name);
+        let service_label = format!(
+            "com.docker.compose.service={}",
+            devcontainer.service.as_ref().unwrap()
+        );
+
+        let mut filters = HashMap::new();
+        filters.insert(
+            "label",
+            vec![project_label.as_str(), service_label.as_str()],
+        );
+
+        let (existed_before, was_running_before) =
+            match self.get_container_from_filters(docker, &filters).await? {
+                Some(stat) => {
+                    debug!("State: {}", stat.state.as_ref().unwrap());
+                    (
+                        true,
+                        stat.state.is_some() && stat.state.as_ref().unwrap() == "running",
+                    )
+                }
+                None => (false, false),
+            };
+
+        let mut compose_args =
+            self.build_docker_compose_cmd(devcontainer, project_name.as_str(), None);
+
+        compose_args.push("up");
+        compose_args.push("-d");
+
+        compose_args.push(devcontainer.service.as_ref().unwrap().as_str());
+
+        if let Some(services) = devcontainer.run_services.as_ref() {
+            for service in services {
+                compose_args.push(service.as_str());
+            }
+        }
+
+        let mut compose_path = self.path.clone();
+        compose_path.push(".devcontainer");
+
+        let mut builder = &mut Command::new(compose_args[0].clone());
+        builder = builder
+            .args(compose_args.iter().skip(1))
+            .current_dir(compose_path);
+
+        info!("Running docker-compose");
+        let compose_proc = builder
+            .spawn()
+            .map_err(|err| UpError::ComposeError(err.to_string()))?;
+
+        if let Err(err) = compose_proc.await {
+            return Err(Error::UpError(UpError::ComposeError(err.to_string())));
+        }
+
+        let container_stat = match self.get_container_from_filters(docker, &filters).await? {
+            Some(stat) => stat,
+            None => {
+                return Err(Error::UpError(UpError::ContainerCreate(
+                    "Could not locate container after compose up".to_string(),
+                )));
+            }
+        };
+
+        let container_id = container_stat.id.as_ref().unwrap();
+
+        if !existed_before {
+            // postCreateCommand
+            if let Some(cmd) = devcontainer.post_create_command.as_ref() {
+                self.docker_exec(docker, container_id.clone(), cmd).await?;
+            }
+        }
+
+        if !was_running_before {
+            // postStartCommand
+            if let Some(cmd) = devcontainer.post_start_command.as_ref() {
+                self.docker_exec(docker, container_id.clone(), cmd).await?;
+            }
+        }
+
+        // postAttachCommand
+        if let Some(cmd) = devcontainer.post_attach_command.as_ref() {
+            self.docker_exec(docker, container_id.clone(), cmd).await?;
+        }
+
+        Ok(container_id.clone())
     }
 
     async fn create_docker_client(&self) -> Result<Docker, Error> {
@@ -531,18 +672,16 @@ impl Project {
     }
 
     pub async fn up(&self, should_wait: bool) -> Result<(), Error> {
-        let devcontainer = self.devcontainer.as_ref().ok_or(UpError::NoDevContainer)?;
+        let devcontainer = self.devcontainer.as_ref().ok_or(Error::NoDevContainer)?;
 
         let docker = self.create_docker_client().await?;
 
         info!("Starting containers");
 
-        let container_id = if devcontainer.image.is_some() {
-            self.up_from_image(&docker, &devcontainer).await?
-        } else if devcontainer.build.is_some() {
-            self.up_from_build(&docker, &devcontainer).await?
-        } else {
-            self.up_from_compose(&docker, &devcontainer).await?
+        let container_id = match devcontainer.get_mode() {
+            Mode::Image => self.up_from_image(&docker, &devcontainer).await?,
+            Mode::Build => self.up_from_build(&docker, &devcontainer).await?,
+            Mode::Compose => self.up_from_compose(&docker, &devcontainer).await?,
         };
 
         info!("Containers are ready: {}", container_id);
@@ -553,6 +692,7 @@ impl Project {
             None
         };
 
+        info!("Should wait: {}", should_wait);
         if !should_wait {
             return Ok(());
         }
@@ -581,7 +721,7 @@ impl Project {
                     info!("CTRL+C: Finishing now");
                 }
             };
-            return self.down(true).await;
+            return self.down(Some(docker), true).await;
         }
 
         let should_go_down = tokio::select! {
@@ -599,11 +739,88 @@ impl Project {
             return Ok(());
         }
 
-        self.down(true).await
+        self.down(Some(docker), true).await
     }
 
-    pub async fn down(&self, from_up: bool) -> Result<(), Error> {
-        info!("Shutting down containers");
+    async fn down_from_image(
+        &self,
+        docker: &Docker,
+        devcontainer: &DevContainer,
+    ) -> Result<(), Error> {
+        let container_label = devcontainer.get_name(&self.path);
+
+        if let Some(stat) = self
+            .check_is_container_running_from_name(docker, container_label.clone())
+            .await?
+        {
+            let container_id = stat.id.as_ref().unwrap();
+
+            docker
+                .stop_container(container_id, None::<StopContainerOptions>)
+                .await?;
+        }
+
         Ok(())
+    }
+
+    async fn down_from_compose(&self, devcontainer: &DevContainer) -> Result<(), Error> {
+        let project_name = devcontainer.get_name(&self.path);
+
+        let mut compose_path = self.path.clone();
+        compose_path.push(".devcontainer");
+
+        let compose_args =
+            self.build_docker_compose_cmd(devcontainer, project_name.as_str(), Some(vec!["down"]));
+
+        let mut builder = &mut Command::new(compose_args[0].clone());
+        builder = builder
+            .args(compose_args.iter().skip(1))
+            .current_dir(compose_path);
+
+        info!("Running docker-compose");
+        let compose_proc = builder
+            .spawn()
+            .map_err(|err| UpError::ComposeError(err.to_string()))?;
+
+        if let Err(err) = compose_proc.await {
+            return Err(Error::UpError(UpError::ComposeError(err.to_string())));
+        }
+
+        Ok(())
+    }
+
+    pub async fn down(&self, docker: Option<Docker>, from_up: bool) -> Result<(), Error> {
+        info!("Shutting down containers");
+
+        let devcontainer = self.devcontainer.as_ref().ok_or(Error::NoDevContainer)?;
+
+        let docker = match docker {
+            Some(d) => d,
+            None => self.create_docker_client().await?,
+        };
+
+        let shutdown_action = devcontainer
+            .shutdown_action
+            .as_ref()
+            .unwrap_or(&ShutdownAction::None);
+
+        match devcontainer.get_mode() {
+            Mode::Compose => {
+                if from_up && shutdown_action != &ShutdownAction::StopCompose {
+                    info!("Not shutting down composer. Shutdown action is not 'stopCompose'");
+                    Ok(())
+                } else {
+                    self.down_from_compose(devcontainer).await
+                }
+            }
+            _ => {
+                if from_up && shutdown_action != &ShutdownAction::StopContainer {
+                    info!("Not shutting down container. Shutdown action is not 'stopContainer'");
+                    Ok(())
+                } else {
+                    self.down_from_image(&docker, devcontainer).await
+                }
+            }
+        }
     }
 }

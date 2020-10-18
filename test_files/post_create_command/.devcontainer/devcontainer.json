@@ -2,5 +2,6 @@
 	"name": "up_image",
     "image": "ubuntu:20.04",
     "postCreateCommand": ["echo", "create"],
-    "postStartCommand": ["echo", "start"]
+    "postStartCommand": ["echo", "start"],
+    "shutdownAction": "stopContainer"
 }

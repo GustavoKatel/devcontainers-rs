@@ -117,11 +117,18 @@ pub struct Application {
     pub cmd: CommandLineVec,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum ShutdownAction {
     None,
     StopContainer,
     StopCompose,
+}
+
+// Specify which mode should this devcontainer operate on
+pub enum Mode {
+    Image,
+    Build,
+    Compose,
 }
 
 impl<'de> Deserialize<'de> for ShutdownAction {
@@ -146,6 +153,16 @@ impl<'de> Deserialize<'de> for ShutdownAction {
 }
 
 impl DevContainer {
+    pub fn get_mode(&self) -> Mode {
+        if self.image.is_some() {
+            Mode::Image
+        } else if self.build.is_some() {
+            Mode::Build
+        } else {
+            Mode::Compose
+        }
+    }
+
     pub fn validate(&self) -> Result<(), Error> {
         // image conflicts with docker_compose_file
         let sources = vec![

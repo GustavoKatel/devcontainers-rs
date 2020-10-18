@@ -6,16 +6,21 @@ pub enum Error {
     InvalidConfig(String),
     UpError(UpError),
     DockerError(DockerError),
+    DownError(DownError),
+    NoDevContainer,
 }
 
 #[derive(Debug)]
 pub enum UpError {
-    NoDevContainer,
     ContainerCreate(String),
     ApplicationSpawn(String),
     ExecCommand(String),
     ImagePull(String),
+    ComposeError(String),
 }
+
+#[derive(Debug)]
+pub enum DownError {}
 
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -26,6 +31,8 @@ impl std::fmt::Display for Error {
             Error::DockerError(err) => {
                 write!(f, "Error trying to communicate with docker: {}", err)
             }
+            Error::DownError(err) => write!(f, "Error trying to shut down project: {}", err),
+            Error::NoDevContainer => write!(f, "Unexpected error! No devcontainer project found!"),
         }
     }
 }
@@ -33,15 +40,13 @@ impl std::fmt::Display for Error {
 impl std::fmt::Display for UpError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            UpError::NoDevContainer => {
-                write!(f, "Unexpected error! No devcontainer project found!")
-            }
             UpError::ContainerCreate(err) => write!(f, "Failed to create container: {}", err),
             UpError::ApplicationSpawn(err) => write!(f, "Failed to spawn application: {}", err),
             UpError::ExecCommand(err) => write!(f, "Failed to execute command: {}", err),
             UpError::ImagePull(err) => {
                 write!(f, "Failed while trying to pull docker image: {}", err)
             }
+            UpError::ComposeError(err) => write!(f, "Failed to execute docker-compose: {}", err),
         }
     }
 }
@@ -55,5 +60,17 @@ impl std::convert::From<UpError> for Error {
 impl std::convert::From<DockerError> for Error {
     fn from(e: DockerError) -> Self {
         Error::DockerError(e)
+    }
+}
+
+impl std::convert::From<DownError> for Error {
+    fn from(e: DownError) -> Self {
+        Error::DownError(e)
+    }
+}
+
+impl std::fmt::Display for DownError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Nothing for now")
     }
 }
