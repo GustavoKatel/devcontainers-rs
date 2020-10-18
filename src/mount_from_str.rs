@@ -21,6 +21,7 @@ impl MountExt for Mount {
         Ok(Mount {
             source: Some(parts[0].to_string()),
             target: Some(parts[1].to_string()),
+            typ: Some(MountTypeEnum::BIND),
             ..Mount::default()
         })
     }
@@ -74,10 +75,10 @@ impl MountExt for Mount {
     }
 
     fn parse_from_str(s: &str) -> Result<Self, Error> {
-        if s.contains(":") {
-            Self::from_colon_string(s)
-        } else {
+        if s.contains(",") {
             Self::from_comma_string(s)
+        } else {
+            Self::from_colon_string(s)
         }
     }
 }

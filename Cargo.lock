@@ -298,6 +298,7 @@ version = "0.1.0"
 dependencies = [
  "bollard",
  "clap",
+ "dirs",
  "env_logger",
  "futures",
  "http",

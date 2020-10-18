@@ -6,10 +6,14 @@ use std::path::PathBuf;
 use tokio;
 
 mod mount_from_str;
+#[cfg(test)]
+mod mount_from_str_tests;
 
 mod devcontainer;
 #[cfg(test)]
 mod devcontainer_tests;
+
+mod settings;
 
 mod project;
 #[cfg(test)]
