@@ -1,5 +1,8 @@
 use bollard::{
-    container::{self, CreateContainerOptions, ListContainersOptions, StartContainerOptions},
+    container::{
+        self, CreateContainerOptions, ListContainersOptions, StartContainerOptions,
+        StopContainerOptions,
+    },
     exec::{CreateExecOptions, StartExecOptions, StartExecResults},
     image::CreateImageOptions,
     service::{ContainerSummaryInner, HostConfig, Mount, PortBinding},
@@ -718,7 +721,20 @@ impl Project {
         docker: &Docker,
         devcontainer: &DevContainer,
     ) -> Result<(), Error> {
-        todo!()
+        let container_label = devcontainer.get_name(&self.path);
+
+        if let Some(stat) = self
+            .check_is_container_running_from_name(docker, container_label.clone())
+            .await?
+        {
+            let container_id = stat.id.as_ref().unwrap();
+
+            docker
+                .stop_container(container_id, None::<StopContainerOptions>)
+                .await?;
+        }
+
+        Ok(())
     }
 
     async fn down_from_compose(&self, devcontainer: &DevContainer) -> Result<(), Error> {
