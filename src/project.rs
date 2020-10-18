@@ -60,18 +60,14 @@ impl std::default::Default for Project {
 impl Project {
     pub fn new(path: Option<PathBuf>, filename: Option<String>) -> Result<Self, Error> {
         let mut dc = Self::default();
-        let mut path = if let Some(pb) = path {
-            pb
-        } else {
-            PathBuf::new()
-        };
+        if let Some(pb) = path {
+            pb.canonicalize()
+                .map_err(|err| Error::InvalidConfig(err.to_string()))?;
+            dc.path = pb.clone();
+        }
 
-        path.canonicalize()
-            .map_err(|err| Error::InvalidConfig(err.to_string()))?;
 
-        dc.path = path.clone();
-
-        for ancestor in path.ancestors() {
+        for ancestor in dc.path.clone().ancestors() {
             if ancestor.join(".devcontainer").exists() {
                 dc.path = ancestor
                     .to_path_buf()
