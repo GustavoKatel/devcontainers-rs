@@ -66,7 +66,6 @@ impl Project {
             dc.path = pb.clone();
         }
 
-
         for ancestor in dc.path.clone().ancestors() {
             if ancestor.join(".devcontainer").exists() {
                 dc.path = ancestor
