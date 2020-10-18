@@ -37,6 +37,8 @@ pub struct Project {
     pub devcontainer: Option<DevContainer>,
 
     pub settings: Option<Settings>,
+
+    pub opts: ProjectOpts,
 }
 
 impl std::default::Default for Project {
@@ -51,15 +53,24 @@ impl std::default::Default for Project {
             devcontainer: None,
 
             settings: None,
+
+            opts: ProjectOpts::default(),
         }
     }
 }
 
+#[derive(Default)]
+pub struct ProjectOpts {
+    pub path: Option<PathBuf>,
+    pub filename: Option<String>,
+    pub should_load_user_settings: Option<bool>,
+}
+
 impl Project {
-    pub fn new(path: Option<PathBuf>, filename: Option<String>) -> Result<Self, Error> {
+    pub fn new(opts: ProjectOpts) -> Result<Self, Error> {
         let mut dc = Self::default();
-        let mut path = if let Some(pb) = path {
-            pb
+        let mut path = if let Some(pb) = opts.path.as_ref() {
+            pb.clone()
         } else {
             PathBuf::new()
         };
@@ -76,15 +87,20 @@ impl Project {
             }
         }
 
-        if let Some(f) = filename {
+        if let Some(f) = opts.filename.clone() {
             dc.filename = f;
         }
+
+        dc.opts = opts;
 
         Ok(dc)
     }
 
     pub async fn load(&mut self) -> Result<(), Error> {
-        self.settings = Some(Settings::load().await?);
+        self.settings = match self.opts.should_load_user_settings.as_ref() {
+            Some(false) => Some(Settings::default()),
+            _ => Some(Settings::load().await?),
+        };
 
         let mut filename = self.path.clone();
         filename.push(".devcontainer");
@@ -218,6 +234,18 @@ impl Project {
 
         if let Some(cmd) = cmd_st {
             info!("Executing hook: {:?}", hook);
+            self.docker_exec(docker, container_id.clone(), cmd).await?;
+        }
+
+        // user hooks
+        let cmd_st = match hook {
+            CommandHook::PostCreate => self.settings.as_ref().unwrap().post_create_command.as_ref(),
+            CommandHook::PostStart => self.settings.as_ref().unwrap().post_start_command.as_ref(),
+            CommandHook::PostAttach => self.settings.as_ref().unwrap().post_attach_command.as_ref(),
+        };
+
+        if let Some(cmd) = cmd_st {
+            info!("Executing user hook: {:?}", hook);
             return self.docker_exec(docker, container_id, cmd).await;
         }
 

@@ -18,6 +18,15 @@ pub struct Settings {
     pub mounts: Option<Vec<String>>,
 
     pub envs: Option<Vec<String>>,
+
+    #[serde(rename = "postCreateCommand")]
+    pub post_create_command: Option<CommandLineVec>,
+
+    #[serde(rename = "postStartCommand")]
+    pub post_start_command: Option<CommandLineVec>,
+
+    #[serde(rename = "postAttachCommand")]
+    pub post_attach_command: Option<CommandLineVec>,
 }
 
 impl Settings {
