@@ -10,6 +10,10 @@ use bollard::{
 };
 use futures::StreamExt;
 use json5;
+use std::io::prelude::*;
+use std::fs::File;
+use crypto::digest::Digest;
+use crypto::sha1::Sha1;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use tokio::fs;
@@ -135,8 +139,49 @@ impl Project {
         Ok(child)
     }
 
-    async fn docker_build_image(&self, docker: &Docker, image: String) -> Result<(), UpError> {
-        Ok(())
+    async fn docker_build_image(&self, docker: &Docker, devcontainer: &DevContainer) -> Result<String, UpError> {
+        let mut devcontainer_dir = self.path.clone();
+        devcontainer_dir.push(".devcontainer");
+
+        let dockerfile = devcontainer.build.as_ref().unwrap().dockerfile.clone();
+        let mut file = File::open(devcontainer_dir.join(dockerfile.clone())).unwrap();
+        let mut contents = String::new();
+        let mut hasher = Sha1::new();
+        file.read_to_string(&mut contents).unwrap();
+        hasher.input_str(&contents);
+        let image_name = format!("devcontainer_{}", &hasher.result_str()[0..10]);
+        info!("Building image: {}", image_name);
+
+        // API reads the Dockerfile from a tarball
+        let enc = GzEncoder::new(Vec::new(), Compression::default());
+        let mut tar = tar::Builder::new(enc);
+        tar.append_dir_all("devcontainer/", devcontainer_dir).unwrap();
+        let dockerfile_path: PathBuf = ["devcontainer", &dockerfile].iter().collect();
+
+        let options = BuildImageOptions{
+            dockerfile: dockerfile_path.to_str().unwrap(),
+            t: &image_name.clone(),
+            rm: true,
+            ..std::default::Default::default()
+        };
+
+        let mut stream = docker.build_image(options, None, Some(tar.into_inner().unwrap().finish().unwrap().into()));
+
+        while let Some(pull_result) = stream.next().await {
+            match pull_result {
+                Ok(output) => {
+                    debug!("Pull output: {:?}", output);
+                }
+                Err(e) => {
+                    error!("Pull error: {}", e);
+                    return Err(UpError::ImagePull(e.to_string()));
+                }
+            }
+        }
+
+        info!("Building image: done");
+
+        Ok(image_name)
     }
 
     async fn docker_pull_image(&self, docker: &Docker, image: String) -> Result<(), UpError> {
@@ -549,31 +594,18 @@ impl Project {
         Ok(id)
     }
 
-    async fn up_from_build<'a>(
+    async fn up_from_build(
         &self,
         docker: &Docker,
         devcontainer: &DevContainer,
     ) -> Result<String, Error> {
-        let mut devcontainer_dir = self.path.clone();
-        devcontainer_dir.push(".devcontainer");
 
-        // API reads the Dockerfile from a tarball
-        let enc = GzEncoder::new(Vec::new(), Compression::default());
-        let mut tar = tar::Builder::new(enc);
-        tar.append_dir_all("devcontainer/", devcontainer_dir).unwrap();
-        let dockerfile_path: PathBuf = ["devcontainer", &devcontainer.build.as_ref().unwrap().dockerfile].iter().collect();
+        let image = self.docker_build_image(&docker, devcontainer).await?;
 
-        let options = BuildImageOptions{
-            dockerfile: dockerfile_path.to_str().unwrap(),
-            t: "devcontainer-image",
-            rm: true,
-            ..std::default::Default::default()
-        };
+        info!("Creating container from: {}", image);
+        let id = self.up_docker(&docker, devcontainer, image).await?;
 
-        //let info: bollard::service::CreateImageInfo = docker.build_image(options, None, Some(tar.into_inner().unwrap().finish().unwrap().into())).collect().await;
-        //println!("-------- {:#?}", info);
-        
-        Ok(String::new())
+        Ok(id)
     }
 
     fn build_docker_compose_cmd<'a>(
@@ -604,7 +636,7 @@ impl Project {
         compose_args
     }
 
-    async fn up_from_compose<'a>(
+    async fn up_from_compose(
         &self,
         docker: &Docker,
         devcontainer: &DevContainer,

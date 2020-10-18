@@ -12,6 +12,7 @@ tar = "0.4.30"
 flate2 = { version = "0.2", features = ["tokio"] }
 tokio = { version = "0.2", features = ["full"] }
 serde = { version = "1.0.117", features = ["derive"] }
+rust-crypto = "0.2.36"
 json5 = "0.2.8"
 bollard = "0.8"
 http = "0.2.1"
