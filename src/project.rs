@@ -504,8 +504,8 @@ impl Project {
             ..std::default::Default::default()
         };
 
-        let info: bollard::service::CreateImageInfo = docker.build_image(options, None, Some(tar.into_inner().unwrap().finish().unwrap().into())).collect().await;
-        println!("-------- {:#?}", info);
+        //let info: bollard::service::CreateImageInfo = docker.build_image(options, None, Some(tar.into_inner().unwrap().finish().unwrap().into())).collect().await;
+        //println!("-------- {:#?}", info);
         
         Ok(String::new())
     }
