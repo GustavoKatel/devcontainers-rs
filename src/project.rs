@@ -149,6 +149,10 @@ impl Project {
         let mut builder = &mut Command::new(args[0].clone());
         builder = builder.args(args.iter().skip(1));
 
+        if let Some(remote_envs) = devcontainer.remote_env.as_ref() {
+            builder.envs(remote_envs);
+        }
+
         let child = builder
             .spawn()
             .map_err(|err| UpError::ApplicationSpawn(err.to_string()))?;
@@ -307,6 +311,33 @@ impl Project {
                     ports_exposed.insert(format!("{}/tcp", p_str), HashMap::new());
                 }
             };
+        }
+
+        if let Some(forward_ports) = devcontainer.forward_ports.as_ref() {
+            for port in forward_ports {
+                port_bindings.insert(
+                    format!("{}/tcp", port),
+                    Some(vec![PortBinding {
+                        host_ip: Some(String::from("0.0.0.0")),
+                        host_port: Some(format!("{}", port)),
+                    }]),
+                );
+                ports_exposed.insert(format!("{}/tcp", port), HashMap::new());
+            }
+        }
+
+        // user ports
+        if let Some(forward_ports) = self.settings.as_ref().unwrap().forward_ports.as_ref() {
+            for port in forward_ports {
+                port_bindings.insert(
+                    format!("{}/tcp", port),
+                    Some(vec![PortBinding {
+                        host_ip: Some(String::from("0.0.0.0")),
+                        host_port: Some(format!("{}", port)),
+                    }]),
+                );
+                ports_exposed.insert(format!("{}/tcp", port), HashMap::new());
+            }
         }
 
         host_config.port_bindings = Some(port_bindings);

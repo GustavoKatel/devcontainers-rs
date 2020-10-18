@@ -28,6 +28,9 @@ pub struct Settings {
 
     #[serde(rename = "postAttachCommand")]
     pub post_attach_command: Option<CommandLineVec>,
+
+    #[serde(rename = "forwardPorts")]
+    pub forward_ports: Option<Vec<i32>>,
 }
 
 impl Settings {

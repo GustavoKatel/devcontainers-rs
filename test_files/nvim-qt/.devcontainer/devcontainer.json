@@ -2,5 +2,6 @@
     "image": "ubuntu:20.04",
     "postCreateCommand": ["bash", "/workspace/.devcontainer/install-nvim.sh"],
     "postAttachCommand": ["bash", "/workspace/.devcontainer/run-nvim.sh"],
-    "appPort": 7777
+    "appPort": 7777,
+    "remoteEnv": {"NVIM_DEVCONTAINER": "true"}
 }
