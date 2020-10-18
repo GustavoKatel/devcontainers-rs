@@ -3,5 +3,6 @@
     "image": "ubuntu:20.04",
     "postCreateCommand": ["echo", "create"],
     "postStartCommand": ["echo", "start"],
-    "shutdownAction": "stopContainer"
+    "shutdownAction": "stopContainer",
+    "containerEnv": {"CONTAINER_ENV_TEST":"12345"}
 }

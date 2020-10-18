@@ -33,12 +33,19 @@ async fn main() {
         .author("Gustavo Sampaio <gbritosampaio@gmail.com>")
         .about("An open-source runner for the devcontainer format")
         .arg(
-            Arg::with_name("docker host")
+            Arg::with_name("docker-host")
                 .short("a")
                 .long("host")
                 .value_name("STRING")
                 .help("Use the specified address to connect to docker")
                 .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("no-user-settings")
+                .short("s")
+                .long("no-user-settings")
+                .help("Ignore global user settings")
+                .takes_value(false),
         )
         .arg(
             Arg::with_name("path")
@@ -64,8 +71,18 @@ async fn main() {
 
     let path = matches.value_of("path").map(PathBuf::from);
 
-    let mut project = project::Project::new(path, None).unwrap();
-    project.docket_host = matches.value_of("host").map(|s| s.to_string());
+    let should_load_user_settings = match matches.is_present("no-user-settings") {
+        true => Some(false),
+        false => None,
+    };
+
+    let mut project = project::Project::new(project::ProjectOpts {
+        path,
+        should_load_user_settings,
+        ..project::ProjectOpts::default()
+    })
+    .unwrap();
+    project.docket_host = matches.value_of("docker-host").map(|s| s.to_string());
 
     if let Err(err) = project.load().await {
         panic!("Error found validating the config file: {}", err);

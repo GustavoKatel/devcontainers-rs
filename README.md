@@ -24,14 +24,18 @@ play around and let me know in the issues what features you'd like to see here. 
 $ devcontainers_rs up
 ```
 
-This will start the proper containers based on the settings provided in `.devcontainer/devcontainer.json`
+2- You can add custom settings to be applied to all projects in `$HOME/.config/devcontainer.json`
 
-1.1 - If u want to spawn a custom editor/ide after creating the containers, add this to your `devcontainer.json`:
+Available settings: `application` (object), `mounts` (object), `postCreateCommand` (string/array), `postStartCommand` (string/array), `postAttachCommand` (string/array), `forwardPorts` (array), `env` (object)
+
+2.1 - Starting editor/ide after setting up containers:
 
 ```json
 {
     ...
     "application": { "cmd": ["nvim-qt", "--server", "127.0.0.1:9797", "--nofork"] },
+    "forwardPorts": [9797],
+    "postAttachCommand": ["bash", "start-headless-nvim.sh"]
     ...
 }
 ```
@@ -41,25 +45,27 @@ This will start the proper containers based on the settings provided in `.devcon
 ⚙️ - DOING
 ✅ - DONE
 
-[⚙️] create containers based on image
+[✅] create containers based on image
 
-[⚙️] spawn custom application
+[✅] spawn custom application
 
-[⚙️] `postCreateCommand`, `postStartCommand`, `postAttachCommand`
+[✅] `postCreateCommand`, `postStartCommand`, `postAttachCommand`
 
-[⚙️] `appPort`
+[✅] `appPort`
 
-[ ] `devPort`
+[⚙️] `devPort`
 
-[ ] `forwardPorts`
+[✅] `forwardPorts`
 
 [ ] `initializeCommand`
 
-[ ] create containers based on `build`
+[✅] create containers based on `build`
 
-[ ] create containers from docker-compose
+[✅] create containers from docker-compose
 
-[ ] destroy/stop containers
+[✅] stop containers
+
+[ ] destroy containers
 
 [ ] user management (`remoteUser`,  `containerUser`, `updateRemoteUserUID`)
 

@@ -1,6 +1,7 @@
 use dirs;
 use json5;
 use serde::{de, Deserialize, Deserializer};
+use std::collections::BTreeMap;
 use tokio::fs;
 
 use super::devcontainer::CommandLineVec;
@@ -17,7 +18,19 @@ pub struct Settings {
 
     pub mounts: Option<Vec<String>>,
 
-    pub envs: Option<Vec<String>>,
+    pub envs: Option<BTreeMap<String, String>>,
+
+    #[serde(rename = "postCreateCommand")]
+    pub post_create_command: Option<CommandLineVec>,
+
+    #[serde(rename = "postStartCommand")]
+    pub post_start_command: Option<CommandLineVec>,
+
+    #[serde(rename = "postAttachCommand")]
+    pub post_attach_command: Option<CommandLineVec>,
+
+    #[serde(rename = "forwardPorts")]
+    pub forward_ports: Option<Vec<i32>>,
 }
 
 impl Settings {
