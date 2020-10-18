@@ -667,6 +667,7 @@ impl Project {
             None
         };
 
+        info!("Should wait: {}", should_wait);
         if !should_wait {
             return Ok(());
         }
