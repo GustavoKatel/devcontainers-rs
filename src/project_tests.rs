@@ -30,7 +30,11 @@ async fn test_validate_valid() {
 #[should_panic]
 async fn test_validate_does_not_exist() {
     let dir = PathBuf::from("abc");
-    let mut dc = Project::new(Some(dir), None).unwrap();
+    let _ = Project::new(ProjectOpts {
+        path: Some(dir),
+        ..ProjectOpts::default()
+    })
+    .unwrap();
 }
 
 #[tokio::test]
