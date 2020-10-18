@@ -71,8 +71,14 @@ async fn main() {
 
     let path = matches.value_of("path").map(PathBuf::from);
 
+    let should_load_user_settings = match matches.is_present("no-user-settings") {
+        true => Some(false),
+        false => None,
+    };
+
     let mut project = project::Project::new(project::ProjectOpts {
         path,
+        should_load_user_settings,
         ..project::ProjectOpts::default()
     })
     .unwrap();

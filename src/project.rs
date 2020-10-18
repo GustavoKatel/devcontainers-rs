@@ -98,7 +98,10 @@ impl Project {
 
     pub async fn load(&mut self) -> Result<(), Error> {
         self.settings = match self.opts.should_load_user_settings.as_ref() {
-            Some(false) => Some(Settings::default()),
+            Some(false) => {
+                warn!("Ignoring user settings because of -s");
+                Some(Settings::default())
+            }
             _ => Some(Settings::load().await?),
         };
 
@@ -319,13 +322,27 @@ impl Project {
         devcontainer: &DevContainer,
         config: &mut container::Config<String>,
     ) -> Result<(), Error> {
-        if let Some(env_map) = devcontainer.container_env.as_ref() {
+        let mut envs = if let Some(env_map) = devcontainer.container_env.as_ref() {
             let envs: Vec<String> = env_map
                 .iter()
                 .map(|(key, value)| format!("{}={}", key, value))
                 .collect();
-            config.env = Some(envs);
+            Some(envs)
+        } else {
+            None
+        };
+
+        if let Some(env_map) = self.settings.as_ref().unwrap().envs.as_ref() {
+            let mut user_envs = envs.unwrap_or(vec![]);
+            user_envs.extend(
+                env_map
+                    .iter()
+                    .map(|(key, value)| format!("{}={}", key, value)),
+            );
+            envs = Some(user_envs);
         }
+
+        config.env = envs;
 
         Ok(())
     }
