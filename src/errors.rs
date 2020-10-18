@@ -15,6 +15,7 @@ pub enum UpError {
     ApplicationSpawn(String),
     ExecCommand(String),
     ImagePull(String),
+    ComposeError(String),
 }
 
 impl std::fmt::Display for Error {
@@ -42,6 +43,7 @@ impl std::fmt::Display for UpError {
             UpError::ImagePull(err) => {
                 write!(f, "Failed while trying to pull docker image: {}", err)
             }
+            UpError::ComposeError(err) => write!(f, "Failed to execute docker-compose: {}", err),
         }
     }
 }
