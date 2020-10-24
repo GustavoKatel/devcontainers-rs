@@ -4,23 +4,23 @@ use bollard::{
         StopContainerOptions,
     },
     exec::{CreateExecOptions, StartExecOptions, StartExecResults},
-    image::{CreateImageOptions, BuildImageOptions},
+    image::{BuildImageOptions, CreateImageOptions},
     service::{ContainerSummaryInner, HostConfig, Mount, PortBinding},
     Docker, API_DEFAULT_VERSION,
 };
-use futures::StreamExt;
-use json5;
-use std::io::prelude::*;
-use std::fs::File;
 use crypto::digest::Digest;
 use crypto::sha1::Sha1;
+use flate2::write::GzEncoder;
+use flate2::Compression;
+use futures::StreamExt;
+use json5;
 use std::collections::HashMap;
+use std::fs::File;
+use std::io::prelude::*;
 use std::path::PathBuf;
 use tokio::fs;
 use tokio::process::{Child, Command};
 use tokio::signal;
-use flate2::Compression;
-use flate2::write::GzEncoder;
 
 use crate::devcontainer::*;
 use crate::errors::*;
@@ -162,7 +162,11 @@ impl Project {
         Ok(child)
     }
 
-    async fn docker_build_image(&self, docker: &Docker, devcontainer: &DevContainer) -> Result<String, UpError> {
+    async fn docker_build_image(
+        &self,
+        docker: &Docker,
+        devcontainer: &DevContainer,
+    ) -> Result<String, UpError> {
         let mut devcontainer_dir = self.path.clone();
         devcontainer_dir.push(".devcontainer");
 
@@ -178,17 +182,22 @@ impl Project {
         // API reads the Dockerfile from a tarball
         let enc = GzEncoder::new(Vec::new(), Compression::default());
         let mut tar = tar::Builder::new(enc);
-        tar.append_dir_all("devcontainer/", devcontainer_dir).unwrap();
+        tar.append_dir_all("devcontainer/", devcontainer_dir)
+            .unwrap();
         let dockerfile_path: PathBuf = ["devcontainer", &dockerfile].iter().collect();
 
-        let options = BuildImageOptions{
+        let options = BuildImageOptions {
             dockerfile: dockerfile_path.to_str().unwrap(),
             t: &image_name.clone(),
             rm: true,
             ..std::default::Default::default()
         };
 
-        let mut stream = docker.build_image(options, None, Some(tar.into_inner().unwrap().finish().unwrap().into()));
+        let mut stream = docker.build_image(
+            options,
+            None,
+            Some(tar.into_inner().unwrap().finish().unwrap().into()),
+        );
 
         while let Some(pull_result) = stream.next().await {
             match pull_result {
@@ -268,6 +277,13 @@ impl Project {
                     container::LogOutput::StdIn { message: bytes } => unreachable!(),
                 },
                 StartExecResults::Detached => { /*nothing to do here*/ }
+            }
+        }
+
+        let inspect = docker.inspect_exec(&exec.id).await?;
+        if let Some(exit_code) = inspect.exit_code.as_ref() {
+            if *exit_code != 0 {
+                return Err(Error::ExecCommandError(format!("Exit code: {}", exit_code)));
             }
         }
 
@@ -675,7 +691,6 @@ impl Project {
         docker: &Docker,
         devcontainer: &DevContainer,
     ) -> Result<String, Error> {
-
         let image = self.docker_build_image(&docker, devcontainer).await?;
 
         info!("Creating container from: {}", image);

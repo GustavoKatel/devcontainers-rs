@@ -9,6 +9,7 @@ pub enum Error {
     DownError(DownError),
     NoDevContainer,
     InvalidSettings(String),
+    ExecCommandError(String),
 }
 
 #[derive(Debug)]
@@ -35,6 +36,7 @@ impl std::fmt::Display for Error {
             Error::DownError(err) => write!(f, "Error trying to shut down project: {}", err),
             Error::NoDevContainer => write!(f, "Unexpected error! No devcontainer project found!"),
             Error::InvalidSettings(err) => write!(f, "Error trying to parse settings: {}", err),
+            Error::ExecCommandError(err) => write!(f, "Error trying to execute command: {}", err),
         }
     }
 }

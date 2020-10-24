@@ -222,7 +222,7 @@ impl DevContainer {
 impl CommandLineVec {
     pub fn to_args_vec(&self) -> Vec<String> {
         match self {
-            CommandLineVec::Line(line) => vec![line.clone()],
+            CommandLineVec::Line(line) => line.clone().split(" ").map(|s| s.to_string()).collect(),
             CommandLineVec::Args(args) => args.clone(),
         }
     }
