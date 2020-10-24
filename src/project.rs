@@ -14,6 +14,7 @@ use flate2::write::GzEncoder;
 use flate2::Compression;
 use futures::StreamExt;
 use json5;
+use serde_yaml;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::prelude::*;
@@ -26,6 +27,7 @@ use crate::devcontainer::*;
 use crate::errors::*;
 use crate::mount_from_str::*;
 use crate::settings::*;
+use crate::settings_compose_model::*;
 
 #[derive(Debug)]
 pub enum CommandHook {
@@ -99,6 +101,13 @@ impl Project {
         Ok(dc)
     }
 
+    fn get_devcontainer_folder(&self) -> PathBuf {
+        let mut path = self.path.clone();
+        path.push(".devcontainer");
+
+        path
+    }
+
     pub async fn load(&mut self) -> Result<(), Error> {
         self.settings = match self.opts.should_load_user_settings.as_ref() {
             Some(false) => {
@@ -108,8 +117,7 @@ impl Project {
             _ => Some(Settings::load().await?),
         };
 
-        let mut filename = self.path.clone();
-        filename.push(".devcontainer");
+        let mut filename = self.get_devcontainer_folder();
         filename.push(self.filename.clone());
 
         info!("Loading project: {}", self.path.to_str().unwrap());
@@ -167,8 +175,7 @@ impl Project {
         docker: &Docker,
         devcontainer: &DevContainer,
     ) -> Result<String, UpError> {
-        let mut devcontainer_dir = self.path.clone();
-        devcontainer_dir.push(".devcontainer");
+        let devcontainer_dir = self.get_devcontainer_folder();
 
         let dockerfile = devcontainer.build.as_ref().unwrap().dockerfile.clone();
         let mut file = File::open(devcontainer_dir.join(dockerfile.clone())).unwrap();
@@ -264,7 +271,7 @@ impl Project {
         debug!("Args: {:?}", cmd.to_args_vec());
         while let Some(exec_result) = stream.next().await {
             match exec_result? {
-                StartExecResults::Attached { log: log } => match log {
+                StartExecResults::Attached { log } => match log {
                     container::LogOutput::StdOut { message: bytes } => {
                         debug!("STDOUT: {}", std::str::from_utf8(&bytes).unwrap())
                     }
@@ -274,7 +281,7 @@ impl Project {
                     container::LogOutput::Console { message: bytes } => {
                         debug!("CONSOLE: {}", std::str::from_utf8(&bytes).unwrap())
                     }
-                    container::LogOutput::StdIn { message: bytes } => unreachable!(),
+                    container::LogOutput::StdIn { message: _ } => unreachable!(),
                 },
                 StartExecResults::Detached => { /*nothing to do here*/ }
             }
@@ -619,7 +626,7 @@ impl Project {
 
                     let options = Some(ListContainersOptions {
                         all: true,
-                        filters: filters,
+                        filters,
                         ..std::default::Default::default()
                     });
 
@@ -699,32 +706,92 @@ impl Project {
         Ok(id)
     }
 
-    fn build_docker_compose_cmd<'a>(
+    async fn build_docker_compose_settings_ext(
         &self,
-        devcontainer: &'a DevContainer,
-        project_name: &'a str,
-        extended_args: Option<Vec<&'a str>>,
-    ) -> Vec<&'a str> {
-        let mut compose_args: Vec<&str> = vec!["docker-compose", "-p", project_name];
+        devcontainer: &DevContainer,
+        project_name: &str,
+        compose_sample_rel: PathBuf,
+    ) -> Result<Option<PathBuf>, Error> {
+        if let None = self.settings {
+            return Ok(None);
+        }
+
+        let mut compose_sample = compose_sample_rel.clone();
+        if compose_sample.is_relative() {
+            compose_sample = self.get_devcontainer_folder();
+            compose_sample.push(compose_sample_rel);
+        }
+
+        debug!("Building global settings compose ext");
+        debug!("Compose sample: {:?}", compose_sample);
+        let compose_data = fs::read_to_string(compose_sample)
+            .await
+            .map_err(|err| Error::Other(err.to_string()))?;
+
+        let compose_model: SettingsComposeModel = serde_yaml::from_str(compose_data.as_str())
+            .map_err(|err| Error::Other(err.to_string()))?;
+
+        Ok(Some(
+            self.settings
+                .as_ref()
+                .unwrap()
+                .generate_compose_override(
+                    devcontainer
+                        .service
+                        .as_ref()
+                        .unwrap_or(&project_name.to_string())
+                        .clone(),
+                    compose_model.version,
+                )
+                .await?,
+        ))
+    }
+
+    async fn build_docker_compose_cmd(
+        &self,
+        devcontainer: &DevContainer,
+        project_name: &str,
+        extended_args: Option<Vec<String>>,
+    ) -> Result<Vec<String>, Error> {
+        let mut compose_args: Vec<String> = vec!["docker-compose", "-p", project_name]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+
+        let mut compose_file_sample = PathBuf::new();
 
         match devcontainer.docker_compose_file.as_ref().unwrap() {
             DockerComposeFile::File(file) => {
-                compose_args.push("-f");
-                compose_args.push(file.as_str());
+                compose_args.push("-f".to_string());
+                compose_args.push(file.clone());
+
+                compose_file_sample = PathBuf::from(&file);
             }
             DockerComposeFile::Files(files) => {
+                if let Some(first) = files.first() {
+                    compose_file_sample = PathBuf::from(first);
+                }
+
                 for file in files {
-                    compose_args.push("-f");
-                    compose_args.push(file.as_str());
+                    compose_args.push("-f".to_string());
+                    compose_args.push(file.clone());
                 }
             }
         };
+
+        if let Some(settings_ext) = self
+            .build_docker_compose_settings_ext(devcontainer, project_name, compose_file_sample)
+            .await?
+        {
+            compose_args.push("-f".to_string());
+            compose_args.push(settings_ext.into_os_string().into_string().unwrap());
+        }
 
         if let Some(ext_args) = extended_args {
             compose_args.extend(ext_args);
         }
 
-        compose_args
+        Ok(compose_args)
     }
 
     async fn up_from_compose(
@@ -758,22 +825,22 @@ impl Project {
                 None => (false, false),
             };
 
-        let mut compose_args =
-            self.build_docker_compose_cmd(devcontainer, project_name.as_str(), None);
+        let mut compose_args = self
+            .build_docker_compose_cmd(devcontainer, project_name.as_str(), None)
+            .await?;
 
-        compose_args.push("up");
-        compose_args.push("-d");
+        compose_args.push("up".to_string());
+        compose_args.push("-d".to_string());
 
-        compose_args.push(devcontainer.service.as_ref().unwrap().as_str());
+        compose_args.push(devcontainer.service.as_ref().unwrap().clone());
 
         if let Some(services) = devcontainer.run_services.as_ref() {
             for service in services {
-                compose_args.push(service.as_str());
+                compose_args.push(service.clone());
             }
         }
 
-        let mut compose_path = self.path.clone();
-        compose_path.push(".devcontainer");
+        let compose_path = self.get_devcontainer_folder();
 
         let mut builder = &mut Command::new(compose_args[0].clone());
         builder = builder
@@ -941,11 +1008,15 @@ impl Project {
     async fn down_from_compose(&self, devcontainer: &DevContainer) -> Result<(), Error> {
         let project_name = devcontainer.get_name(&self.path);
 
-        let mut compose_path = self.path.clone();
-        compose_path.push(".devcontainer");
+        let compose_path = self.get_devcontainer_folder();
 
-        let compose_args =
-            self.build_docker_compose_cmd(devcontainer, project_name.as_str(), Some(vec!["down"]));
+        let compose_args = self
+            .build_docker_compose_cmd(
+                devcontainer,
+                project_name.as_str(),
+                Some(vec!["down".to_string()]),
+            )
+            .await?;
 
         let mut builder = &mut Command::new(compose_args[0].clone());
         builder = builder

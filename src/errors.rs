@@ -10,6 +10,7 @@ pub enum Error {
     NoDevContainer,
     InvalidSettings(String),
     ExecCommandError(String),
+    Other(String),
 }
 
 #[derive(Debug)]
@@ -37,6 +38,7 @@ impl std::fmt::Display for Error {
             Error::NoDevContainer => write!(f, "Unexpected error! No devcontainer project found!"),
             Error::InvalidSettings(err) => write!(f, "Error trying to parse settings: {}", err),
             Error::ExecCommandError(err) => write!(f, "Error trying to execute command: {}", err),
+            Error::Other(err) => write!(f, "Unexpected error: {}", err),
         }
     }
 }

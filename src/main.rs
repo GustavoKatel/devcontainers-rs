@@ -14,6 +14,7 @@ mod devcontainer;
 mod devcontainer_tests;
 
 mod settings;
+mod settings_compose_model;
 
 mod project;
 #[cfg(test)]
