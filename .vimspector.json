@@ -1,0 +1,13 @@
+{
+  "configurations": {
+    "launch": {
+      "adapter": "CodeLLDB",
+      "configuration": {
+        "request": "launch",
+        "program": "${Executable}",
+        "args": ["*${Args}"],
+        "MIMode": "lldb"
+      }
+    }
+  }
+}

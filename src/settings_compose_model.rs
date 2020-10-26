@@ -13,4 +13,6 @@ pub struct Service {
     pub volumes: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ports: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub environment: Option<HashMap<String, String>>,
 }

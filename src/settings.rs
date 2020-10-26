@@ -61,13 +61,23 @@ impl Settings {
         &self,
         service_name: String,
         version: String,
+        envs: Option<HashMap<String, String>>,
     ) -> Result<PathBuf, Error> {
+        let mut envs = envs.unwrap_or(HashMap::new());
+
+        if let Some(settings_envs) = self.envs.as_ref() {
+            for (key, value) in settings_envs.iter() {
+                envs.insert(key.clone(), value.clone());
+            }
+        }
+
         let service = Service {
             ports: self
                 .forward_ports
                 .clone()
                 .map(|ports| ports.iter().map(|p| format!("{}:{}", p, p)).collect()),
             volumes: self.mounts.clone(),
+            environment: Some(envs),
             ..Service::default()
         };
 

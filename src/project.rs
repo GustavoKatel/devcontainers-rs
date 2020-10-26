@@ -145,6 +145,17 @@ impl Project {
         Ok(())
     }
 
+    fn get_devcontainer_envs(&self, devcontainer: &DevContainer) -> HashMap<String, String> {
+        let mut envs = HashMap::new();
+
+        envs.insert(
+            "DEVCONTAINER_PROJECT".to_string(),
+            devcontainer.get_name(&self.path),
+        );
+
+        envs
+    }
+
     async fn spawn_application(&self, devcontainer: &DevContainer) -> Result<Child, Error> {
         info!("Found application settings. Spawning");
         let application = self
@@ -163,6 +174,11 @@ impl Project {
         if let Some(remote_envs) = devcontainer.remote_env.as_ref() {
             builder.envs(remote_envs);
         }
+
+        let devcontainer_envs = self.get_devcontainer_envs(devcontainer);
+        debug!("{:?}", devcontainer_envs);
+
+        builder.envs(devcontainer_envs);
 
         let child = builder
             .spawn()
@@ -424,27 +440,30 @@ impl Project {
         devcontainer: &DevContainer,
         config: &mut container::Config<String>,
     ) -> Result<(), Error> {
-        let mut envs = if let Some(env_map) = devcontainer.container_env.as_ref() {
-            let envs: Vec<String> = env_map
-                .iter()
-                .map(|(key, value)| format!("{}={}", key, value))
-                .collect();
-            Some(envs)
-        } else {
-            None
+        let mut envs: Vec<String> = self
+            .get_devcontainer_envs(devcontainer)
+            .iter()
+            .map(|(key, value)| format!("{}={}", key, value))
+            .collect();
+
+        if let Some(env_map) = devcontainer.container_env.as_ref() {
+            envs.extend(
+                env_map
+                    .iter()
+                    .map(|(key, value)| format!("{}={}", key, value))
+                    .collect::<Vec<String>>(),
+            );
         };
 
         if let Some(env_map) = self.settings.as_ref().unwrap().envs.as_ref() {
-            let mut user_envs = envs.unwrap_or(vec![]);
-            user_envs.extend(
+            envs.extend(
                 env_map
                     .iter()
                     .map(|(key, value)| format!("{}={}", key, value)),
-            );
-            envs = Some(user_envs);
+            )
         }
 
-        config.env = envs;
+        config.env = Some(envs);
 
         Ok(())
     }
@@ -742,6 +761,7 @@ impl Project {
                         .unwrap_or(&project_name.to_string())
                         .clone(),
                     compose_model.version,
+                    Some(self.get_devcontainer_envs(devcontainer)),
                 )
                 .await?,
         ))
@@ -1014,7 +1034,7 @@ impl Project {
             .build_docker_compose_cmd(
                 devcontainer,
                 project_name.as_str(),
-                Some(vec!["down".to_string()]),
+                Some(vec!["stop".to_string()]),
             )
             .await?;
 
