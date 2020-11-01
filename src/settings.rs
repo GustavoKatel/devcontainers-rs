@@ -62,6 +62,7 @@ impl Settings {
         service_name: String,
         version: String,
         envs: Option<HashMap<String, String>>,
+        ext_ports: Option<Vec<i32>>,
     ) -> Result<PathBuf, Error> {
         let mut envs = envs.unwrap_or(HashMap::new());
 
@@ -71,11 +72,20 @@ impl Settings {
             }
         }
 
+        let mut ports = self
+            .forward_ports
+            .clone()
+            .map(|ports| ports.iter().map(|p| format!("{}:{}", p, p)).collect())
+            .unwrap_or(vec![]);
+
+        if let Some(ep) = ext_ports {
+            for port in ep {
+                ports.push(format!("{}:{}", port, port));
+            }
+        }
+
         let service = Service {
-            ports: self
-                .forward_ports
-                .clone()
-                .map(|ports| ports.iter().map(|p| format!("{}:{}", p, p)).collect()),
+            ports: Some(ports),
             volumes: self.mounts.clone(),
             environment: Some(envs),
             ..Service::default()

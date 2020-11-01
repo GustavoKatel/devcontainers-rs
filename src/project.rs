@@ -36,6 +36,11 @@ pub enum CommandHook {
     PostAttach,
 }
 
+struct Context {
+    pub application_port: Option<u16>,
+    pub project_name: String,
+}
+
 pub struct Project {
     pub path: PathBuf,
     pub filename: String,
@@ -145,7 +150,11 @@ impl Project {
         Ok(())
     }
 
-    fn get_devcontainer_envs(&self, devcontainer: &DevContainer) -> HashMap<String, String> {
+    fn get_devcontainer_envs(
+        &self,
+        devcontainer: &DevContainer,
+        ctx: &Context,
+    ) -> HashMap<String, String> {
         let mut envs = HashMap::new();
 
         envs.insert(
@@ -153,10 +162,21 @@ impl Project {
             devcontainer.get_name(&self.path),
         );
 
+        if let Some(port) = ctx.application_port.as_ref() {
+            envs.insert(
+                "DEVCONTAINER_APPLICATION_PORT".to_string(),
+                format!("{}", port),
+            );
+        }
+
         envs
     }
 
-    async fn spawn_application(&self, devcontainer: &DevContainer) -> Result<Child, Error> {
+    async fn spawn_application(
+        &self,
+        devcontainer: &DevContainer,
+        ctx: &Context,
+    ) -> Result<Child, Error> {
         info!("Found application settings. Spawning");
         let application = self
             .settings
@@ -175,7 +195,7 @@ impl Project {
             builder.envs(remote_envs);
         }
 
-        let devcontainer_envs = self.get_devcontainer_envs(devcontainer);
+        let devcontainer_envs = self.get_devcontainer_envs(devcontainer, ctx);
         debug!("{:?}", devcontainer_envs);
 
         builder.envs(devcontainer_envs);
@@ -349,6 +369,7 @@ impl Project {
     async fn container_opts_build_ports(
         &self,
         devcontainer: &DevContainer,
+        ctx: &Context,
         config: &mut container::Config<String>,
     ) -> Result<(), Error> {
         let mut ports_exposed: HashMap<String, HashMap<(), ()>> = HashMap::new();
@@ -427,6 +448,18 @@ impl Project {
             }
         }
 
+        // application_port
+        if let Some(port) = ctx.application_port.as_ref() {
+            port_bindings.insert(
+                format!("{}/tcp", port),
+                Some(vec![PortBinding {
+                    host_ip: Some(String::from("0.0.0.0")),
+                    host_port: Some(format!("{}", port)),
+                }]),
+            );
+            ports_exposed.insert(format!("{}/tcp", port), HashMap::new());
+        }
+
         host_config.port_bindings = Some(port_bindings);
         config.host_config = Some(host_config);
 
@@ -438,10 +471,11 @@ impl Project {
     async fn container_opts_build_envs(
         &self,
         devcontainer: &DevContainer,
+        ctx: &Context,
         config: &mut container::Config<String>,
     ) -> Result<(), Error> {
         let mut envs: Vec<String> = self
-            .get_devcontainer_envs(devcontainer)
+            .get_devcontainer_envs(devcontainer, ctx)
             .iter()
             .map(|(key, value)| format!("{}={}", key, value))
             .collect();
@@ -577,10 +611,45 @@ impl Project {
         self.get_container_from_filters(docker, &filters).await
     }
 
+    async fn get_application_port(
+        &self,
+        stat: Option<&ContainerSummaryInner>,
+    ) -> Result<u16, Error> {
+        if let Some(stat) = stat {
+            if let Some(labels) = stat.labels.as_ref() {
+                for (key, _) in labels.iter() {
+                    if key.starts_with("devcontainer_application_port=") {
+                        let application_port = key.replace("devcontainer_application_port=", "");
+                        let application_port: u16 = application_port.parse().map_err(|err| {
+                            Error::Other(format!(
+                                "Could not parse application port from container: {}",
+                                err
+                            ))
+                        })?;
+
+                        return Ok(application_port);
+                    }
+                }
+            }
+        }
+
+        let application_port = match crate::utils::request_open_port().await {
+            None => {
+                return Err(Error::Other(
+                    "Could select an available port for application".to_string(),
+                ))
+            }
+            Some(p) => p,
+        };
+
+        Ok(application_port)
+    }
+
     async fn up_docker(
         &self,
         docker: &Docker,
         devcontainer: &DevContainer,
+        ctx: &mut Context,
         image: String,
     ) -> Result<String, Error> {
         let container_label = devcontainer.get_name(&self.path);
@@ -591,6 +660,9 @@ impl Project {
         {
             let id = stat.id.as_ref().unwrap();
             info!("Found container with id = '{}'", id);
+
+            ctx.application_port = Some(self.get_application_port(Some(&stat)).await?);
+            info!("Application port: {:?}", ctx.application_port.as_ref());
 
             // if container is not running, try to start it
             if stat.state.as_ref().unwrap() != "running" {
@@ -608,18 +680,21 @@ impl Project {
             return Ok(id.clone());
         }
 
+        ctx.application_port = Some(self.get_application_port(None).await?);
+        info!("Application port: {:?}", ctx.application_port.as_ref());
+
         let mut config: container::Config<String> = container::Config {
             image: Some(image.clone()),
             ..Default::default()
         };
 
-        self.container_opts_build_envs(devcontainer, &mut config)
+        self.container_opts_build_envs(devcontainer, ctx, &mut config)
             .await?;
 
         self.container_opts_build_mounts(devcontainer, &mut config)
             .await?;
 
-        self.container_opts_build_ports(devcontainer, &mut config)
+        self.container_opts_build_ports(devcontainer, ctx, &mut config)
             .await?;
 
         self.container_opts_build_cmd(devcontainer, &mut config)
@@ -701,13 +776,14 @@ impl Project {
         &self,
         docker: &Docker,
         devcontainer: &DevContainer,
+        ctx: &mut Context,
     ) -> Result<String, Error> {
         let image = self.docker_format_image(devcontainer.image.as_ref().unwrap().to_string());
 
         self.docker_pull_image(docker, image.clone()).await?;
 
         info!("Creating container from: {}", image);
-        let id = self.up_docker(&docker, devcontainer, image).await?;
+        let id = self.up_docker(&docker, devcontainer, ctx, image).await?;
 
         Ok(id)
     }
@@ -716,11 +792,12 @@ impl Project {
         &self,
         docker: &Docker,
         devcontainer: &DevContainer,
+        ctx: &mut Context,
     ) -> Result<String, Error> {
         let image = self.docker_build_image(&docker, devcontainer).await?;
 
         info!("Creating container from: {}", image);
-        let id = self.up_docker(&docker, devcontainer, image).await?;
+        let id = self.up_docker(&docker, devcontainer, ctx, image).await?;
 
         Ok(id)
     }
@@ -728,7 +805,7 @@ impl Project {
     async fn build_docker_compose_settings_ext(
         &self,
         devcontainer: &DevContainer,
-        project_name: &str,
+        ctx: &Context,
         compose_sample_rel: PathBuf,
     ) -> Result<Option<PathBuf>, Error> {
         if let None = self.settings {
@@ -750,6 +827,11 @@ impl Project {
         let compose_model: SettingsComposeModel = serde_yaml::from_str(compose_data.as_str())
             .map_err(|err| Error::Other(err.to_string()))?;
 
+        let ext_ports: Option<Vec<i32>> = match ctx.application_port.as_ref() {
+            None => None,
+            Some(p) => Some(vec![p.clone().into()]),
+        };
+
         Ok(Some(
             self.settings
                 .as_ref()
@@ -758,10 +840,11 @@ impl Project {
                     devcontainer
                         .service
                         .as_ref()
-                        .unwrap_or(&project_name.to_string())
+                        .unwrap_or(&ctx.project_name)
                         .clone(),
                     compose_model.version,
-                    Some(self.get_devcontainer_envs(devcontainer)),
+                    Some(self.get_devcontainer_envs(devcontainer, ctx)),
+                    ext_ports,
                 )
                 .await?,
         ))
@@ -770,10 +853,10 @@ impl Project {
     async fn build_docker_compose_cmd(
         &self,
         devcontainer: &DevContainer,
-        project_name: &str,
+        ctx: &Context,
         extended_args: Option<Vec<String>>,
     ) -> Result<Vec<String>, Error> {
-        let mut compose_args: Vec<String> = vec!["docker-compose", "-p", project_name]
+        let mut compose_args: Vec<String> = vec!["docker-compose", "-p", ctx.project_name.as_ref()]
             .iter()
             .map(|s| s.to_string())
             .collect();
@@ -800,7 +883,7 @@ impl Project {
         };
 
         if let Some(settings_ext) = self
-            .build_docker_compose_settings_ext(devcontainer, project_name, compose_file_sample)
+            .build_docker_compose_settings_ext(devcontainer, ctx, compose_file_sample)
             .await?
         {
             compose_args.push("-f".to_string());
@@ -818,10 +901,9 @@ impl Project {
         &self,
         docker: &Docker,
         devcontainer: &DevContainer,
+        ctx: &mut Context,
     ) -> Result<String, Error> {
-        let project_name = devcontainer.get_name(&self.path);
-
-        let project_label = format!("com.docker.compose.project={}", project_name);
+        let project_label = format!("com.docker.compose.project={}", ctx.project_name);
         let service_label = format!(
             "com.docker.compose.service={}",
             devcontainer.service.as_ref().unwrap()
@@ -836,6 +918,8 @@ impl Project {
         let (existed_before, was_running_before) =
             match self.get_container_from_filters(docker, &filters).await? {
                 Some(stat) => {
+                    info!("Application port: {:?}", ctx.application_port.as_ref());
+
                     debug!("State: {}", stat.state.as_ref().unwrap());
                     (
                         true,
@@ -846,7 +930,7 @@ impl Project {
             };
 
         let mut compose_args = self
-            .build_docker_compose_cmd(devcontainer, project_name.as_str(), None)
+            .build_docker_compose_cmd(devcontainer, ctx, None)
             .await?;
 
         compose_args.push("up".to_string());
@@ -933,23 +1017,35 @@ impl Project {
         Ok(docker)
     }
 
+    fn create_context(&self, devcontainer: &DevContainer) -> Context {
+        Context {
+            application_port: None,
+            project_name: devcontainer.get_name(&self.path),
+        }
+    }
+
     pub async fn up(&self, should_wait: bool) -> Result<(), Error> {
         let devcontainer = self.devcontainer.as_ref().ok_or(Error::NoDevContainer)?;
+
+        let mut ctx = self.create_context(&devcontainer);
 
         let docker = self.create_docker_client().await?;
 
         info!("Starting containers");
 
         let container_id = match devcontainer.get_mode() {
-            Mode::Image => self.up_from_image(&docker, &devcontainer).await?,
-            Mode::Build => self.up_from_build(&docker, &devcontainer).await?,
-            Mode::Compose => self.up_from_compose(&docker, &devcontainer).await?,
+            Mode::Image => self.up_from_image(&docker, &devcontainer, &mut ctx).await?,
+            Mode::Build => self.up_from_build(&docker, &devcontainer, &mut ctx).await?,
+            Mode::Compose => {
+                self.up_from_compose(&docker, &devcontainer, &mut ctx)
+                    .await?
+            }
         };
 
         info!("Containers are ready: {}", container_id);
 
         let child = if self.settings.as_ref().unwrap().application.is_some() {
-            Some(self.spawn_application(devcontainer).await?)
+            Some(self.spawn_application(devcontainer, &ctx).await?)
         } else {
             None
         };
@@ -1025,17 +1121,15 @@ impl Project {
         Ok(())
     }
 
-    async fn down_from_compose(&self, devcontainer: &DevContainer) -> Result<(), Error> {
-        let project_name = devcontainer.get_name(&self.path);
-
+    async fn down_from_compose(
+        &self,
+        devcontainer: &DevContainer,
+        ctx: &Context,
+    ) -> Result<(), Error> {
         let compose_path = self.get_devcontainer_folder();
 
         let compose_args = self
-            .build_docker_compose_cmd(
-                devcontainer,
-                project_name.as_str(),
-                Some(vec!["stop".to_string()]),
-            )
+            .build_docker_compose_cmd(devcontainer, ctx, Some(vec!["stop".to_string()]))
             .await?;
 
         let mut builder = &mut Command::new(compose_args[0].clone());
@@ -1060,6 +1154,8 @@ impl Project {
 
         let devcontainer = self.devcontainer.as_ref().ok_or(Error::NoDevContainer)?;
 
+        let mut ctx = self.create_context(&devcontainer);
+
         let docker = match docker {
             Some(d) => d,
             None => self.create_docker_client().await?,
@@ -1076,7 +1172,7 @@ impl Project {
                     info!("Not shutting down composer. Shutdown action is not 'stopCompose'");
                     Ok(())
                 } else {
-                    self.down_from_compose(devcontainer).await
+                    self.down_from_compose(devcontainer, &mut ctx).await
                 }
             }
             _ => {

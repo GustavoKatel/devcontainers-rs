@@ -5,6 +5,8 @@ use clap::{App, Arg, SubCommand};
 use std::path::PathBuf;
 use tokio;
 
+mod utils;
+
 mod mount_from_str;
 #[cfg(test)]
 mod mount_from_str_tests;
