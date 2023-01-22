@@ -1,11 +1,11 @@
 use dirs;
 use json5;
-use serde::{de, Deserialize, Deserializer};
+use serde::Deserialize;
 use serde_yaml;
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use tokio::fs;
-use tokio::prelude::*;
+use tokio::io::AsyncWriteExt;
 
 use super::devcontainer::CommandLineVec;
 use super::errors::*;
@@ -51,8 +51,7 @@ impl Settings {
             .await
             .map_err(|err| Error::InvalidSettings(err.to_string()))?;
 
-        let settings: Settings =
-            json5::from_str(&contents).map_err(|err| Error::InvalidSettings(err.to_string()))?;
+        let settings: Settings = json5::from_str(&contents)?;
 
         Ok(settings)
     }
@@ -103,16 +102,11 @@ impl Settings {
         let mut path = std::env::temp_dir();
         path.push(format!("{}-compose.yml", service_name));
 
-        let mut file = tokio::fs::File::create(&path)
-            .await
-            .map_err(|err| Error::Other(err.to_string()))?;
+        let mut file = tokio::fs::File::create(&path).await?;
 
-        let data =
-            serde_yaml::to_vec(&compose_model).map_err(|err| Error::Other(err.to_string()))?;
+        let data = serde_yaml::to_string(&compose_model)?;
 
-        file.write_all(data.as_slice())
-            .await
-            .map_err(|err| Error::Other(err.to_string()))?;
+        file.write_all(data.as_bytes()).await?;
 
         Ok(path)
     }

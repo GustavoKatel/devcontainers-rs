@@ -1,3 +1,5 @@
+use log::*;
+
 use bollard::{
     container::{
         self, CreateContainerOptions, ListContainersOptions, StartContainerOptions,
@@ -5,16 +7,15 @@ use bollard::{
     },
     exec::{CreateExecOptions, StartExecOptions, StartExecResults},
     image::{BuildImageOptions, CreateImageOptions},
-    service::{ContainerSummaryInner, HostConfig, Mount, PortBinding},
+    service::{ContainerSummary, HostConfig, Mount, PortBinding},
     Docker, API_DEFAULT_VERSION,
 };
-use crypto::digest::Digest;
-use crypto::sha1::Sha1;
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use futures::StreamExt;
 use json5;
 use serde_yaml;
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::prelude::*;
@@ -77,6 +78,7 @@ pub struct ProjectOpts {
     pub path: Option<PathBuf>,
     pub filename: Option<String>,
     pub should_load_user_settings: Option<bool>,
+    pub docker_host: Option<String>,
 }
 
 impl Project {
@@ -200,9 +202,8 @@ impl Project {
 
         builder.envs(devcontainer_envs);
 
-        let child = builder
-            .spawn()
-            .map_err(|err| UpError::ApplicationSpawn(err.to_string()))?;
+        let child = builder.spawn()?;
+
         Ok(child)
     }
 
@@ -216,10 +217,14 @@ impl Project {
         let dockerfile = devcontainer.build.as_ref().unwrap().dockerfile.clone();
         let mut file = File::open(devcontainer_dir.join(dockerfile.clone())).unwrap();
         let mut contents = String::new();
-        let mut hasher = Sha1::new();
+        let mut hasher = Sha256::new();
         file.read_to_string(&mut contents).unwrap();
-        hasher.input_str(&contents);
-        let image_name = format!("devcontainer_{}", &hasher.result_str()[0..10]);
+        hasher.update(&contents);
+
+        let result = hasher.finalize();
+        let result_hex = hex::encode(result);
+
+        let image_name = format!("devcontainer_{}", &result_hex[0..10]);
         info!("Building image: {}", image_name);
 
         // API reads the Dockerfile from a tarball
@@ -249,7 +254,7 @@ impl Project {
                 }
                 Err(e) => {
                     error!("Pull error: {}", e);
-                    return Err(UpError::ImagePull(e.to_string()));
+                    return Err(UpError::ImagePull(e));
                 }
             }
         }
@@ -275,7 +280,7 @@ impl Project {
                 }
                 Err(e) => {
                     error!("Pull error: {}", e);
-                    return Err(UpError::ImagePull(e.to_string()));
+                    return Err(UpError::ImagePull(e));
                 }
             }
         }
@@ -302,25 +307,31 @@ impl Project {
 
         let exec = docker.create_exec(id.as_str(), options).await?;
 
-        let mut stream = docker.start_exec(exec.id.as_str(), None::<StartExecOptions>);
-
         debug!("Args: {:?}", cmd.to_args_vec());
-        while let Some(exec_result) = stream.next().await {
-            match exec_result? {
-                StartExecResults::Attached { log } => match log {
-                    container::LogOutput::StdOut { message: bytes } => {
-                        debug!("STDOUT: {}", std::str::from_utf8(&bytes).unwrap())
+
+        match docker
+            .start_exec(exec.id.as_str(), None::<StartExecOptions>)
+            .await?
+        {
+            StartExecResults::Attached { mut output, .. } => {
+                while let Some(exec_result) = output.next().await {
+                    let log = exec_result?;
+
+                    match log {
+                        container::LogOutput::StdOut { message: bytes } => {
+                            debug!("STDOUT: {}", std::str::from_utf8(&bytes).unwrap())
+                        }
+                        container::LogOutput::StdErr { message: bytes } => {
+                            debug!("STDERR: {}", std::str::from_utf8(&bytes).unwrap())
+                        }
+                        container::LogOutput::Console { message: bytes } => {
+                            debug!("CONSOLE: {}", std::str::from_utf8(&bytes).unwrap())
+                        }
+                        container::LogOutput::StdIn { message: _ } => unreachable!(),
                     }
-                    container::LogOutput::StdErr { message: bytes } => {
-                        debug!("STDERR: {}", std::str::from_utf8(&bytes).unwrap())
-                    }
-                    container::LogOutput::Console { message: bytes } => {
-                        debug!("CONSOLE: {}", std::str::from_utf8(&bytes).unwrap())
-                    }
-                    container::LogOutput::StdIn { message: _ } => unreachable!(),
-                },
-                StartExecResults::Detached => { /*nothing to do here*/ }
+                }
             }
+            StartExecResults::Detached => { /*nothing to do here*/ }
         }
 
         let inspect = docker.inspect_exec(&exec.id).await?;
@@ -582,7 +593,7 @@ impl Project {
         &self,
         docker: &Docker,
         filters: &HashMap<&str, Vec<&str>>,
-    ) -> Result<Option<ContainerSummaryInner>, Error> {
+    ) -> Result<Option<ContainerSummary>, Error> {
         let options = Some(ListContainersOptions {
             all: true,
             filters: filters.clone(),
@@ -602,7 +613,7 @@ impl Project {
         &self,
         docker: &Docker,
         name: String,
-    ) -> Result<Option<ContainerSummaryInner>, Error> {
+    ) -> Result<Option<ContainerSummary>, Error> {
         let label_name: String = format!("devcontainer_name={}", name);
 
         let mut filters = HashMap::new();
@@ -611,10 +622,7 @@ impl Project {
         self.get_container_from_filters(docker, &filters).await
     }
 
-    async fn get_application_port(
-        &self,
-        stat: Option<&ContainerSummaryInner>,
-    ) -> Result<u16, Error> {
+    async fn get_application_port(&self, stat: Option<&ContainerSummary>) -> Result<u16, Error> {
         if let Some(stat) = stat {
             if let Some(labels) = stat.labels.as_ref() {
                 for (key, _) in labels.iter() {
@@ -731,7 +739,10 @@ impl Project {
                         }
                     }
 
-                    container_options = Some(CreateContainerOptions { name });
+                    container_options = Some(CreateContainerOptions {
+                        name,
+                        platform: None,
+                    });
 
                     break;
                 }
@@ -820,12 +831,9 @@ impl Project {
 
         debug!("Building global settings compose ext");
         debug!("Compose sample: {:?}", compose_sample);
-        let compose_data = fs::read_to_string(compose_sample)
-            .await
-            .map_err(|err| Error::Other(err.to_string()))?;
+        let compose_data = fs::read_to_string(compose_sample).await?;
 
-        let compose_model: SettingsComposeModel = serde_yaml::from_str(compose_data.as_str())
-            .map_err(|err| Error::Other(err.to_string()))?;
+        let compose_model: SettingsComposeModel = serde_yaml::from_str(compose_data.as_str())?;
 
         let ext_ports: Option<Vec<i32>> = match ctx.application_port.as_ref() {
             None => None,
@@ -952,13 +960,9 @@ impl Project {
             .current_dir(compose_path);
 
         info!("Running docker-compose");
-        let compose_proc = builder
-            .spawn()
-            .map_err(|err| UpError::ComposeError(err.to_string()))?;
+        let mut compose_proc = builder.spawn()?;
 
-        if let Err(err) = compose_proc.await {
-            return Err(Error::UpError(UpError::ComposeError(err.to_string())));
-        }
+        compose_proc.wait().await?;
 
         let container_stat = match self.get_container_from_filters(docker, &filters).await? {
             Some(stat) => stat,
@@ -1062,10 +1066,10 @@ impl Project {
             None::<container::WaitContainerOptions<String>>,
         );
 
-        if let Some(child) = child {
+        if let Some(mut child) = child {
             info!("Waiting for application");
             tokio::select! {
-                child_res = child => {
+                child_res = child.wait() => {
                     if let Err(err) = child_res {
                         return Err(Error::UpError(UpError::ApplicationSpawn(err.to_string())));
                     }
@@ -1138,13 +1142,9 @@ impl Project {
             .current_dir(compose_path);
 
         info!("Running docker-compose");
-        let compose_proc = builder
-            .spawn()
-            .map_err(|err| UpError::ComposeError(err.to_string()))?;
+        let mut compose_proc = builder.spawn()?;
 
-        if let Err(err) = compose_proc.await {
-            return Err(Error::UpError(UpError::ComposeError(err.to_string())));
-        }
+        compose_proc.wait().await?;
 
         Ok(())
     }

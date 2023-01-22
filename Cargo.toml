@@ -2,22 +2,24 @@
 name = "devcontainers-rs"
 version = "0.1.0"
 authors = ["Gustavo <gbritosampaio@gmail.com>"]
-edition = "2018"
+edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-clap = "2.33.3"
-tar = "0.4.30"
-flate2 = { version = "0.2", features = ["tokio"] }
-tokio = { version = "0.2", features = ["full"] }
-serde = { version = "1.0.117", features = ["derive"] }
-rust-crypto = "0.2.36"
-json5 = "0.2.8"
-bollard = "0.8"
-http = "0.2.1"
-futures = "0.3.6"
-log = "0.4.0"
-env_logger = "0.8.1"
-dirs = "3.0.1"
-serde_yaml = "0.8.13"
+clap = { version = "4.1.1", features = ["derive"] }
+tar = "0.4.38"
+flate2 = { version = "1.0.25" }
+tokio = { version = "1.24.2", features = ["full"] }
+serde = { version = "1.0.152", features = ["derive"] }
+json5 = "0.4.1"
+futures = "0.3.25"
+log = "0.4.17"
+env_logger = "0.10.0"
+dirs = "4.0.0"
+serde_yaml = "0.9.17"
+bollard = "0.14.0"
+thiserror = "1.0.38"
+sha2 = "0.10.6"
+hex = "0.4.3"
+anyhow = "1.0.68"

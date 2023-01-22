@@ -1,82 +1,43 @@
 use bollard::errors::Error as DockerError;
+use thiserror::Error as ThisError;
 
-#[derive(Debug)]
+#[derive(Debug, ThisError)]
 pub enum Error {
+    #[error("Config file does not exist: {0}")]
     ConfigDoesNotExist(String),
+    #[error("Config is not valid: {0}")]
     InvalidConfig(String),
-    UpError(UpError),
-    DockerError(DockerError),
-    DownError(DownError),
+    #[error(transparent)]
+    UpError(#[from] UpError),
+    #[error(transparent)]
+    DockerError(#[from] DockerError),
+    #[error(transparent)]
+    DownError(#[from] DownError),
+    #[error("No devcontainer project found")]
     NoDevContainer,
+    #[error("Error trying to parse settings: {0}")]
     InvalidSettings(String),
+    #[error("Error trying to execute command: {0}")]
     ExecCommandError(String),
+    #[error(transparent)]
+    YamlError(#[from] serde_yaml::Error),
+    #[error("Error trying to load settings: {0}")]
+    JSON5Error(#[from] json5::Error),
+    #[error(transparent)]
+    IOError(#[from] std::io::Error),
+    #[error("Unexpected error: {0}")]
     Other(String),
 }
 
-#[derive(Debug)]
+#[derive(Debug, ThisError)]
 pub enum UpError {
+    #[error("Failed to create container: {0}")]
     ContainerCreate(String),
+    #[error("Failed to spawn application: {0}")]
     ApplicationSpawn(String),
-    ExecCommand(String),
-    ImagePull(String),
-    ComposeError(String),
+    #[error("Failed while trying to pull docker image: {0}")]
+    ImagePull(DockerError),
 }
 
-#[derive(Debug)]
+#[derive(Debug, ThisError)]
 pub enum DownError {}
-
-impl std::fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Error::ConfigDoesNotExist(file) => write!(f, "Config file does not exist: {}", file),
-            Error::InvalidConfig(err) => write!(f, "Config is not valid: {}", err),
-            Error::UpError(err) => write!(f, "Error trying to start project: {}", err),
-            Error::DockerError(err) => {
-                write!(f, "Error trying to communicate with docker: {}", err)
-            }
-            Error::DownError(err) => write!(f, "Error trying to shut down project: {}", err),
-            Error::NoDevContainer => write!(f, "Unexpected error! No devcontainer project found!"),
-            Error::InvalidSettings(err) => write!(f, "Error trying to parse settings: {}", err),
-            Error::ExecCommandError(err) => write!(f, "Error trying to execute command: {}", err),
-            Error::Other(err) => write!(f, "Unexpected error: {}", err),
-        }
-    }
-}
-
-impl std::fmt::Display for UpError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            UpError::ContainerCreate(err) => write!(f, "Failed to create container: {}", err),
-            UpError::ApplicationSpawn(err) => write!(f, "Failed to spawn application: {}", err),
-            UpError::ExecCommand(err) => write!(f, "Failed to execute command: {}", err),
-            UpError::ImagePull(err) => {
-                write!(f, "Failed while trying to pull docker image: {}", err)
-            }
-            UpError::ComposeError(err) => write!(f, "Failed to execute docker-compose: {}", err),
-        }
-    }
-}
-
-impl std::convert::From<UpError> for Error {
-    fn from(e: UpError) -> Self {
-        Error::UpError(e)
-    }
-}
-
-impl std::convert::From<DockerError> for Error {
-    fn from(e: DockerError) -> Self {
-        Error::DockerError(e)
-    }
-}
-
-impl std::convert::From<DownError> for Error {
-    fn from(e: DownError) -> Self {
-        Error::DownError(e)
-    }
-}
-
-impl std::fmt::Display for DownError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Nothing for now")
-    }
-}
