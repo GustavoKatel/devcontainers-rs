@@ -49,7 +49,7 @@ async fn test_validate_invalid() {
     .unwrap();
 
     match dc.load().await {
-        Err(super::errors::Error::InvalidConfig(_)) => {}
+        Err(_) => {}
         _ => panic!("Expected error"),
     };
 }

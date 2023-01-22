@@ -20,8 +20,6 @@ mod project;
 #[cfg(test)]
 mod project_tests;
 
-mod errors;
-
 #[derive(Parser)]
 #[command(author = "Gustavo Sampaio <devcontainer-rs@gsampaio.dev>")]
 #[command(version, about = "devcontainer.json parser and executor", long_about = None)]
@@ -69,12 +67,12 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     let path = match cli.path {
-        Some(p) => PathBuf::from(p),
-        None => PathBuf::new(),
+        Some(p) => Some(PathBuf::from(p)),
+        None => None,
     };
 
     let mut project = project::Project::new(project::ProjectOpts {
-        path: Some(path),
+        path,
         should_load_user_settings: Some(cli.should_load_user_settings),
         docker_host: cli.docker_host,
         ..project::ProjectOpts::default()

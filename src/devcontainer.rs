@@ -1,8 +1,7 @@
+use anyhow::{bail, Result};
 use serde::{de, Deserialize, Deserializer};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-
-use crate::errors::*;
 
 fn default_true() -> bool {
     true
@@ -156,7 +155,7 @@ impl DevContainer {
         }
     }
 
-    pub fn validate(&self) -> Result<(), Error> {
+    pub fn validate(&self) -> Result<()> {
         // image conflicts with docker_compose_file
         let sources = vec![
             self.image.is_some(),
@@ -164,28 +163,21 @@ impl DevContainer {
             self.build.is_some(),
         ];
         if sources.iter().filter(|v| **v).count() > 1 {
-            return Err(Error::InvalidConfig(
-                "Please specify only one of: image, dockerComposeFile or build".to_string(),
-            ));
+            bail!("Please specify only one of: image, dockerComposeFile or build");
         }
         if self.image.is_none() && self.docker_compose_file.is_none() && self.build.is_none() {
-            return Err(Error::InvalidConfig(
-                "Please specify at least one of: image, dockerComposeFile or build".to_string(),
-            ));
+            bail!("Please specify at least one of: image, dockerComposeFile or build");
         }
 
         if let Some(img) = self.image.as_ref() {
             if img.trim().is_empty() {
-                return Err(Error::InvalidConfig(format!("Invalid image: '{}'", img)));
+                bail!("Invalid image: '{}'", img);
             }
         }
 
         if let Some(opts) = self.build.as_ref() {
             if opts.dockerfile.trim().is_empty() {
-                return Err(Error::InvalidConfig(format!(
-                    "Invalid docker file: '{}'",
-                    opts.dockerfile
-                )));
+                bail!("Invalid docker file: '{}'", opts.dockerfile);
             }
         }
 
@@ -194,9 +186,7 @@ impl DevContainer {
                 DockerComposeFile::File(dcf) => dcf.trim().is_empty(),
                 DockerComposeFile::Files(v) => v.is_empty(),
             } {
-                return Err(Error::InvalidConfig(
-                    "Invalid docker-compose file".to_string(),
-                ));
+                bail!("Invalid docker-compose file");
             }
 
             if match self.service.as_ref() {
@@ -204,7 +194,7 @@ impl DevContainer {
                 Some(s) if s.is_empty() => true,
                 _ => false,
             } {
-                return Err(Error::InvalidConfig("Invalid service!".to_string()));
+                bail!("Invalid service!");
             }
         }
 

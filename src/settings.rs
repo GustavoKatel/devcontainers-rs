@@ -1,3 +1,4 @@
+use anyhow::{anyhow, bail, Context as AnyhowContext, Result};
 use dirs;
 use json5;
 use serde::Deserialize;
@@ -8,7 +9,6 @@ use tokio::fs;
 use tokio::io::AsyncWriteExt;
 
 use super::devcontainer::CommandLineVec;
-use super::errors::*;
 use super::settings_compose_model::*;
 
 #[derive(Deserialize)]
@@ -38,7 +38,7 @@ pub struct Settings {
 }
 
 impl Settings {
-    pub async fn load() -> Result<Self, Error> {
+    pub async fn load() -> Result<Self> {
         let mut settings_path = dirs::config_dir().unwrap();
 
         settings_path.push("devcontainer.json");
@@ -49,7 +49,7 @@ impl Settings {
 
         let contents = fs::read_to_string(settings_path)
             .await
-            .map_err(|err| Error::InvalidSettings(err.to_string()))?;
+            .context("Invalid settings")?;
 
         let settings: Settings = json5::from_str(&contents)?;
 
@@ -62,7 +62,7 @@ impl Settings {
         version: String,
         envs: Option<HashMap<String, String>>,
         ext_ports: Option<Vec<i32>>,
-    ) -> Result<PathBuf, Error> {
+    ) -> Result<PathBuf> {
         let mut envs = envs.unwrap_or(HashMap::new());
 
         if let Some(settings_envs) = self.envs.as_ref() {

@@ -1,21 +1,21 @@
 use bollard::service::{Mount, MountTypeEnum};
 use std::str::FromStr;
 
-use super::errors::Error;
+use anyhow::{anyhow, bail, Context as AnyhowContext, Result};
 
 pub trait MountExt: Sized {
-    fn from_comma_string(s: &str) -> Result<Self, Error>;
-    fn from_colon_string(s: &str) -> Result<Self, Error>;
+    fn from_comma_string(s: &str) -> Result<Self>;
+    fn from_colon_string(s: &str) -> Result<Self>;
 
-    fn parse_from_str(s: &str) -> Result<Self, Error>;
+    fn parse_from_str(s: &str) -> Result<Self>;
 }
 
 impl MountExt for Mount {
-    fn from_colon_string(s: &str) -> Result<Self, Error> {
+    fn from_colon_string(s: &str) -> Result<Self> {
         let parts: Vec<&str> = s.split(":").collect();
 
         if parts.len() < 2 {
-            return Err(Error::InvalidConfig(format!("Invalid mount point: {}", s)));
+            bail!("Invalid mount point: {}", s);
         }
 
         Ok(Mount {
@@ -26,11 +26,11 @@ impl MountExt for Mount {
         })
     }
 
-    fn from_comma_string(s: &str) -> Result<Self, Error> {
+    fn from_comma_string(s: &str) -> Result<Self> {
         let parts: Vec<&str> = s.split(",").collect();
 
         if parts.len() == 0 {
-            return Err(Error::InvalidConfig("Invalid mount point".to_string()));
+            bail!("Invalid mount point");
         }
 
         let mut mount = Mount::default();
@@ -38,7 +38,7 @@ impl MountExt for Mount {
         for part in parts {
             let attr_parts: Vec<&str> = part.split("=").collect();
             if attr_parts.len() < 2 {
-                return Err(Error::InvalidConfig(format!("Invalid mount point: {}", s)));
+                bail!("Invalid mount point: {}", s);
             }
 
             let attr_name = attr_parts[0];
@@ -53,20 +53,14 @@ impl MountExt for Mount {
                 }
                 "type" => {
                     mount.typ = Some(MountTypeEnum::from_str(attr_value).map_err(|err| {
-                        Error::InvalidConfig(format!(
-                            "Invalid mount point type: {} {}",
-                            attr_value, err
-                        ))
+                        anyhow!("Invalid mount point type: {} {}", attr_value, err)
                     })?);
                 }
                 "consistency" => {
                     mount.consistency = Some(attr_value.to_string());
                 }
                 attr => {
-                    return Err(Error::InvalidConfig(format!(
-                        "Invalid attr '{}' for mount point: {}",
-                        attr, s
-                    )))
+                    bail!("Invalid attr '{}' for mount point: {}", attr, s)
                 }
             };
         }
@@ -74,7 +68,7 @@ impl MountExt for Mount {
         Ok(mount)
     }
 
-    fn parse_from_str(s: &str) -> Result<Self, Error> {
+    fn parse_from_str(s: &str) -> Result<Self> {
         if s.contains(",") {
             Self::from_comma_string(s)
         } else {
